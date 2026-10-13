@@ -141,3 +141,37 @@ class FakeFS:
 
     def network_internal(self, name):
         return self.networks[name]
+
+
+ENGINE_IMAGE = {"/etc": None, "/etc/os": b"alpine", "/srv": None, "/srv/out": None}
+ENGINE_MOUNTS = [{"Destination": "/srv/out", "RW": True, "Type": "bind"}]
+
+
+def clock_from_zero():
+    n = [0]
+
+    def f():
+        n[0] += 1
+        return f"2026-10-13T18:00:{n[0]:02d}Z"
+    return f
+
+
+def make_engine(tmp_path, key, fs, violations=None):
+    """Engine + EgressGate over a FakeFS, writing a run into tmp_path/run."""
+    from poi.engine import Engine
+    from poi.gate import EgressGate
+    from poi.policy import parse
+    from poi.publish import LocalPublisher
+    from poi.state import StateTracker
+    from poi.wal import WalReader, WalWriter
+
+    pol = parse(POLICY)
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    eng = Engine(Ledger(tmp_path / "run", key), StateTracker(fs, (out, "/srv/out")),
+                 WalReader(tmp_path / "run" / "proxy-wal"), LocalPublisher(tmp_path / "run"), pol,
+                 {"id": "abc", "image": "sha256:img"}, clock=clock_from_zero(),
+                 on_violation=(violations.append if violations is not None else lambda v: None),
+                 full_scan_every=3)
+    gate = EgressGate(pol, WalWriter(tmp_path / "run" / "proxy-wal", tmp_path / "run" / "evidence"))
+    return eng, gate
