@@ -14,7 +14,9 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from poi import canonical as c
+from poi import evidence
 from poi.lthash import LtHash
+from poi.policy import Policy, config_violations
 
 E_SIGNATURE = 10
 E_CHAIN = 11
@@ -177,3 +179,44 @@ def verify_chain(run_dir: Path, pubkey_hex: str) -> VerifyResult:
         prev = cp
     return res
 
+
+
+def _evidence(run_dir: Path, digest: str, cp_seq: int, what: str) -> bytes:
+    data = evidence.get(run_dir / "evidence", digest)
+    if data is None:
+        raise VerifyError(E_EVIDENCE, cp_seq, f"{what} evidence {digest[:12]}… missing or corrupt")
+    return data
+
+
+def verify_policy(res: VerifyResult, run_dir: Path, policy: Policy) -> None:
+    """Checks policy binding and configuration (15), evidence (16) and schema conformance (14)."""
+    run_dir = Path(run_dir)
+    for cp in res.checkpoints:
+        if cp["policy"] != policy.digest:
+            raise VerifyError(E_CONFIG, cp["seq"], "checkpoint is bound to a different policy")
+    for seq, digest in res.config_digests:
+        doc = json.loads(_evidence(run_dir, digest, seq, "config"))
+        if v := config_violations(doc, policy):
+            raise VerifyError(E_CONFIG, seq, "; ".join(v))
+    for ev in res.egress:
+        f = ev.fields
+        if ev.domain == "dns":
+            _, _, _, name, qtype, verdict = f
+            if verdict == "allow" and (name not in policy.hosts or qtype != "A"):
+                raise VerifyError(E_SCHEMA, ev.checkpoint, f"dns seq {ev.seq}: {name} answered but not allowed")
+            continue
+        _, _, _, method, host, path, hdig, bdig, verdict, _ = f
+        headers = _evidence(run_dir, hdig, ev.checkpoint, f"egress {ev.seq} headers")
+        body = _evidence(run_dir, bdig, ev.checkpoint, f"egress {ev.seq} body")
+        if verdict != "allow":
+            continue
+        d = policy.decide(host, method, path, body)
+        if d.verdict != "allow" or d.body != body:
+            raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} does not satisfy policy ({d.reason})")
+        fwd = [["content-type", "application/json"]] if body else []
+        fwd += [[k, v] for k, v in sorted(policy.forward_headers.items())]
+        if json.loads(headers) != sorted(fwd):
+            raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} forwarded unexpected headers")
+    for ev in res.ingress:
+        _evidence(run_dir, ev.fields[3], ev.checkpoint, f"ingress {ev.seq} headers")
+        _evidence(run_dir, ev.fields[4], ev.checkpoint, f"ingress {ev.seq} body")
