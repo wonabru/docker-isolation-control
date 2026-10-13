@@ -7,3 +7,8 @@ run/
 
 # secrets: Ed25519 signing key, fingerprint key
 *.key
+
+# local user data and IDE settings
+moje_dane/
+fp.bin
+.idea/
