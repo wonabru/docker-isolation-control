@@ -9,6 +9,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -89,12 +90,9 @@ def _check_sig(cp: dict, pub: Ed25519PublicKey) -> None:
         raise VerifyError(E_SIGNATURE, cp.get("seq"), f"bad signature ({type(e).__name__})")
 
 
-def _read_delta(run_dir: Path, cp: dict) -> list[tuple[str, str, bytes]]:
+def parse_delta(cp: dict, raw: bytes) -> list[tuple[str, str, bytes]]:
+    """Check the delta file against its checkpoint and decode it into (op, acc, element)."""
     seq = cp["seq"]
-    try:
-        raw = (run_dir / "delta" / f"{seq:06d}.jsonl").read_bytes()
-    except FileNotFoundError:
-        raise VerifyError(E_DELTA, seq, "delta file missing")
     if c.b2b256(raw) != cp["delta"]:
         raise VerifyError(E_DELTA, seq, "delta file digest mismatch")
     ops = []
@@ -106,19 +104,87 @@ def _read_delta(run_dir: Path, cp: dict) -> list[tuple[str, str, bytes]]:
     return ops
 
 
-def verify_chain(run_dir: Path, pubkey_hex: str) -> VerifyResult:
-    """Checks signatures (10), chain links and time (11), delta sums (12), seq/count (13)."""
-    run_dir = Path(run_dir)
-    pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
-    res = VerifyResult(accs={a: LtHash() for a in ACCS})
-    allowed_seqs: set[int] = set()
-    seen_ingress: set[int] = set()
-    next_seq = 1
-    prev: dict | None = None
+def _read_delta(run_dir: Path, cp: dict) -> bytes:
+    try:
+        return (run_dir / "delta" / f"{cp['seq']:06d}.jsonl").read_bytes()
+    except FileNotFoundError:
+        raise VerifyError(E_DELTA, cp["seq"], "delta file missing")
 
-    for cp in _load_checkpoints(run_dir):
-        seq = cp["seq"]
-        _check_sig(cp, pub)
+
+GetEvidence = Callable[[str], "bytes | None"]
+
+
+def _evidence(get: GetEvidence, digest: str, cp_seq: int, what: str) -> bytes:
+    data = get(digest)
+    if data is None:
+        raise VerifyError(E_EVIDENCE, cp_seq, f"{what} evidence {digest[:12]}… missing or corrupt")
+    return data
+
+
+def _check_binding(cp: dict, policy: Policy) -> None:
+    if cp["policy"] != policy.digest:
+        raise VerifyError(E_CONFIG, cp["seq"], "checkpoint is bound to a different policy")
+
+
+def _check_config(seq: int, digest: str, get: GetEvidence, policy: Policy) -> None:
+    doc = json.loads(_evidence(get, digest, seq, "config"))
+    if v := config_violations(doc, policy):
+        raise VerifyError(E_CONFIG, seq, "; ".join(v))
+
+
+def _check_egress(ev: Event, get: GetEvidence, policy: Policy) -> None:
+    f = ev.fields
+    if ev.domain == "dns":
+        _, _, _, name, qtype, verdict = f
+        if verdict == "allow" and (name not in policy.hosts or qtype != "A"):
+            raise VerifyError(E_SCHEMA, ev.checkpoint, f"dns seq {ev.seq}: {name} answered but not allowed")
+        return
+    _, _, _, method, host, path, hdig, bdig, verdict, _ = f
+    headers = _evidence(get, hdig, ev.checkpoint, f"egress {ev.seq} headers")
+    body = _evidence(get, bdig, ev.checkpoint, f"egress {ev.seq} body")
+    if verdict != "allow":
+        return
+    d = policy.decide(host, method, path, body)
+    if d.verdict != "allow" or d.body != body:
+        raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} does not satisfy policy ({d.reason})")
+    fwd = [["content-type", "application/json"]] if body else []
+    fwd += [[k, v] for k, v in sorted(policy.forward_headers.items())]
+    if json.loads(headers) != sorted(fwd):
+        raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} forwarded unexpected headers")
+
+
+def _check_ingress(ev: Event, get: GetEvidence) -> None:
+    _evidence(get, ev.fields[3], ev.checkpoint, f"ingress {ev.seq} headers")
+    _evidence(get, ev.fields[4], ev.checkpoint, f"ingress {ev.seq} body")
+
+
+class ChainVerifier:
+    """Incremental verifier: feed checkpoints in order; state carries over between calls.
+
+    Without a policy it checks 10–13 (chain); with a policy also 14–16 for each checkpoint.
+    """
+
+    def __init__(self, pubkey_hex: str, policy: Policy | None = None) -> None:
+        self.pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
+        self.policy = policy
+        self.res = VerifyResult(accs={a: LtHash() for a in ACCS})
+        self._allowed: set[int] = set()
+        self._seen_ingress: set[int] = set()
+        self._next_seq = 1
+        self._prev: dict | None = None
+
+    @property
+    def next_checkpoint(self) -> int:
+        return len(self.res.checkpoints)
+
+    def feed(self, cp: dict, delta_raw: bytes, get_evidence: GetEvidence | None = None) -> list[Event]:
+        """Verify one checkpoint. Returns the egress/dns/ingress events it introduced."""
+        res = self.res
+        seq = cp.get("seq")
+        if seq != self.next_checkpoint:
+            raise VerifyError(E_CHAIN, seq, f"expected checkpoint {self.next_checkpoint}")
+        _check_sig(cp, self.pub)
+        prev = self._prev
         if prev is None:
             if cp["prev"] is not None:
                 raise VerifyError(E_CHAIN, seq, "genesis has non-null prev")
@@ -128,21 +194,27 @@ def verify_chain(run_dir: Path, pubkey_hex: str) -> VerifyResult:
             if cp["t"] < prev["t"]:
                 raise VerifyError(E_CHAIN, seq, "time went backwards")
 
-        for op, acc, element in _read_delta(run_dir, cp):
+        accs = {a: h.copy() for a, h in res.accs.items()}   # commit only if the whole checkpoint verifies
+        state = res.state_elements.copy()
+        new_events: list[Event] = []
+        new_configs: list[tuple[int, str]] = []
+        next_seq = self._next_seq
+        allowed, seen = set(self._allowed), set(self._seen_ingress)
+        for op, acc, element in parse_delta(cp, delta_raw):
             fields = c.decode(element)
             if acc == "state":
                 if fields[0] not in ("file", "config"):
                     raise VerifyError(E_DELTA, seq, f"domain {fields[0]} in state accumulator")
                 if op == "add":
-                    res.accs["state"].add(element)
-                    res.state_elements[element] += 1
+                    accs["state"].add(element)
+                    state[element] += 1
                     if fields[0] == "config":
-                        res.config_digests.append((seq, fields[1]))
+                        new_configs.append((seq, fields[1]))
                 else:
-                    if res.state_elements[element] == 0:
+                    if state[element] == 0:
                         raise VerifyError(E_DELTA, seq, "sub of element not in state")
-                    res.accs["state"].sub(element)
-                    res.state_elements[element] -= 1
+                    accs["state"].sub(element)
+                    state[element] -= 1
                 continue
             if op != "add":
                 raise VerifyError(E_SEQ, seq, f"{acc} accumulator is append-only")
@@ -154,69 +226,78 @@ def verify_chain(run_dir: Path, pubkey_hex: str) -> VerifyResult:
                     raise VerifyError(E_SEQ, seq, f"egress seq {ev.seq}, expected {next_seq}")
                 next_seq += 1
                 if ev.domain == "egress" and fields[8] == "allow":
-                    allowed_seqs.add(ev.seq)
-                res.accs["egress"].add(element)
-                res.egress.append(ev)
+                    allowed.add(ev.seq)
             else:
                 if ev.domain != "ingress":
                     raise VerifyError(E_DELTA, seq, f"domain {ev.domain} in ingress accumulator")
-                if ev.seq not in allowed_seqs or ev.seq in seen_ingress:
+                if ev.seq not in allowed or ev.seq in seen:
                     raise VerifyError(E_SEQ, seq, f"ingress seq {ev.seq} has no unique allowed request")
-                seen_ingress.add(ev.seq)
-                res.accs["ingress"].add(element)
-                res.ingress.append(ev)
+                seen.add(ev.seq)
+            accs[acc].add(element)
+            new_events.append(ev)
 
         for acc in ACCS:
             claimed = LtHash.from_b64(cp[acc]["vec"])
-            if claimed != res.accs[acc] or cp[acc]["digest"] != claimed.digest():
+            if claimed != accs[acc] or cp[acc]["digest"] != claimed.digest():
                 raise VerifyError(E_DELTA, seq, f"{acc} accumulator does not match prev + delta")
-        if cp["egress"]["count"] != len(res.egress) or cp["ingress"]["count"] != len(res.ingress):
+        n_egress = len(res.egress) + sum(e.domain != "ingress" for e in new_events)
+        n_ingress = len(res.ingress) + sum(e.domain == "ingress" for e in new_events)
+        if cp["egress"]["count"] != n_egress or cp["ingress"]["count"] != n_ingress:
             raise VerifyError(E_SEQ, seq, "count does not match number of events")
 
+        if self.policy is not None:
+            get = get_evidence or (lambda d: None)
+            _check_binding(cp, self.policy)
+            for cseq, digest in new_configs:
+                _check_config(cseq, digest, get, self.policy)
+            for ev in new_events:
+                if ev.domain == "ingress":
+                    _check_ingress(ev, get)
+                else:
+                    _check_egress(ev, get, self.policy)
+
+        res.accs, res.state_elements = accs, state
+        res.config_digests += new_configs
+        for ev in new_events:
+            (res.ingress if ev.domain == "ingress" else res.egress).append(ev)
+        self._next_seq, self._allowed, self._seen_ingress = next_seq, allowed, seen
         if "rotate" in cp:
-            pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(cp["rotate"]))
+            self.pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(cp["rotate"]))
         res.checkpoints.append(cp)
-        prev = cp
-    return res
+        self._prev = cp
+        return new_events
 
 
-
-def _evidence(run_dir: Path, digest: str, cp_seq: int, what: str) -> bytes:
-    data = evidence.get(run_dir / "evidence", digest)
-    if data is None:
-        raise VerifyError(E_EVIDENCE, cp_seq, f"{what} evidence {digest[:12]}… missing or corrupt")
-    return data
+def verify_chain(run_dir: Path, pubkey_hex: str) -> VerifyResult:
+    """Checks signatures (10), chain links and time (11), delta sums (12), seq/count (13)."""
+    run_dir = Path(run_dir)
+    v = ChainVerifier(pubkey_hex)
+    for cp in _load_checkpoints(run_dir):
+        v.feed(cp, _read_delta(run_dir, cp))
+    return v.res
 
 
 def verify_policy(res: VerifyResult, run_dir: Path, policy: Policy) -> None:
     """Checks policy binding and configuration (15), evidence (16) and schema conformance (14)."""
-    run_dir = Path(run_dir)
+    edir = Path(run_dir) / "evidence"
+
+    def get(d: str) -> bytes | None:
+        return evidence.get(edir, d)
+
     for cp in res.checkpoints:
-        if cp["policy"] != policy.digest:
-            raise VerifyError(E_CONFIG, cp["seq"], "checkpoint is bound to a different policy")
+        _check_binding(cp, policy)
     for seq, digest in res.config_digests:
-        doc = json.loads(_evidence(run_dir, digest, seq, "config"))
-        if v := config_violations(doc, policy):
-            raise VerifyError(E_CONFIG, seq, "; ".join(v))
+        _check_config(seq, digest, get, policy)
     for ev in res.egress:
-        f = ev.fields
-        if ev.domain == "dns":
-            _, _, _, name, qtype, verdict = f
-            if verdict == "allow" and (name not in policy.hosts or qtype != "A"):
-                raise VerifyError(E_SCHEMA, ev.checkpoint, f"dns seq {ev.seq}: {name} answered but not allowed")
-            continue
-        _, _, _, method, host, path, hdig, bdig, verdict, _ = f
-        headers = _evidence(run_dir, hdig, ev.checkpoint, f"egress {ev.seq} headers")
-        body = _evidence(run_dir, bdig, ev.checkpoint, f"egress {ev.seq} body")
-        if verdict != "allow":
-            continue
-        d = policy.decide(host, method, path, body)
-        if d.verdict != "allow" or d.body != body:
-            raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} does not satisfy policy ({d.reason})")
-        fwd = [["content-type", "application/json"]] if body else []
-        fwd += [[k, v] for k, v in sorted(policy.forward_headers.items())]
-        if json.loads(headers) != sorted(fwd):
-            raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} forwarded unexpected headers")
+        _check_egress(ev, get, policy)
     for ev in res.ingress:
-        _evidence(run_dir, ev.fields[3], ev.checkpoint, f"ingress {ev.seq} headers")
-        _evidence(run_dir, ev.fields[4], ev.checkpoint, f"ingress {ev.seq} body")
+        _check_ingress(ev, get)
+
+
+def verify_run(run_dir: Path, pubkey_hex: str, policy: Policy) -> ChainVerifier:
+    """Incremental equivalent of verify_chain + verify_policy over a run directory."""
+    run_dir = Path(run_dir)
+    v = ChainVerifier(pubkey_hex, policy)
+    for cp in _load_checkpoints(run_dir):
+        v.feed(cp, _read_delta(run_dir, cp), lambda d: evidence.get(run_dir / "evidence", d))
+    return v
