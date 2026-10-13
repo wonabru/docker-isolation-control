@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import docker
-from docker.errors import APIError, NotFound
+from docker.errors import APIError, ImageNotFound, NotFound
 
 PROXY_IMAGE = "poi-proxy:0.1"
 PROXY_PORT = 8080
@@ -39,6 +39,14 @@ class RuntimeInfo:
 
 def build_proxy_image(client: docker.DockerClient, tag: str = PROXY_IMAGE) -> None:
     client.images.build(path=str(REPO_ROOT), dockerfile="docker/proxy.Dockerfile", tag=tag, rm=True)
+
+
+def ensure_proxy_image(client: docker.DockerClient, tag: str = PROXY_IMAGE) -> None:
+    """Build the proxy image on first use (needs network access for pip)."""
+    try:
+        client.images.get(tag)
+    except ImageNotFound:
+        build_proxy_image(client, tag)
 
 
 class Runtime:

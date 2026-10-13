@@ -12,7 +12,7 @@ from poi import policy as pol
 from poi.engine import Engine
 from poi.ledger import Ledger, load_key
 from poi.publish import LocalPublisher
-from poi.runtime import Runtime, RuntimeInfo
+from poi.runtime import Runtime, RuntimeInfo, ensure_proxy_image
 from poi.state import DockerContainerFS, StateTracker
 from poi.wal import WalReader
 
@@ -64,6 +64,7 @@ def loop(engine: Engine, rt: Runtime, tick_seconds: float, max_ticks: int | None
 def start(spec: RunSpec, client=None) -> Runtime:
     client = client or docker.from_env()
     policy = pol.load(spec.policy_path)
+    ensure_proxy_image(client)
     rt = Runtime(client, spec.run_dir)
     rt.prepare(spec.policy_path, spec.fingerprints, policy.upstream_insecure)
     rt.create_workload(spec.image, spec.command, policy.output_volume, spec.extra_ro_mounts)

@@ -1,0 +1,18 @@
+# Przykład: zadanie może wysłać na zewnątrz WYŁĄCZNIE dwie liczby (statystyki), nic więcej.
+version: 1
+on_violation: pause          # naruszenie konfiguracji → docker pause
+tick_seconds: 2
+output_volume: /srv/out      # jedyny zapisywalny montaż; trafia do hasza stanu
+endpoints:
+  - host: httpbin.org        # publiczne echo-API, stoi tu za "serwer raportów"
+    method: POST
+    path: /anything
+    max_requests_per_minute: 10
+    request_schema:
+      type: object
+      additionalProperties: false
+      required: [records, avg_age]
+      properties:
+        records: {type: integer, minimum: 0, maximum: 1000000}
+        avg_age: {type: integer, minimum: 0, maximum: 150}
+fingerprint: {k: 32, w: 16}
