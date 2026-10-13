@@ -39,3 +39,33 @@ def test_fingerprint_then_report(tmp_path, key, capsys):
     assert main(["report", str(run), "--data", str(data), "--fp-key", str(fpk)]) == 0
     text = capsys.readouterr().out
     assert "hits in ALLOWED traffic: 0" in text and "9 bits" in text
+
+
+def test_dashboard_rejects_wrong_token(tmp_path, key, capsys):
+    import threading
+    from poi.serve import make_server
+    run = _run(tmp_path, key)
+    srv = make_server(run, "right", port=0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    (tmp_path / "tok").write_text("wrong\n")
+    try:
+        code = main(["dashboard", "--source", f"http://127.0.0.1:{srv.server_address[1]}",
+                     "--token-file", str(tmp_path / "tok"), "--pubkey-file", str(run / "pubkey"),
+                     "--mirror", str(tmp_path / "m"), "--listen", "127.0.0.1:0"])
+    finally:
+        srv.shutdown()
+    assert code == 2 and "401" in capsys.readouterr().err
+
+
+def test_build_dashboard_over_local_source(tmp_path, key):
+    import argparse
+    from poi.cli import build_dashboard
+    run = _run(tmp_path, key)
+    args = argparse.Namespace(source=str(run), token_file=None, pubkey=None, pubkey_file=str(run / "pubkey"),
+                              data=None, fp_key=None, mirror=str(tmp_path / "m"), listen="127.0.0.1:0")
+    srv, mirror, url = build_dashboard(args)
+    try:
+        assert url.startswith("http://127.0.0.1:") and "?key=" in url
+        assert mirror.sync_once(wait=0) == 2
+    finally:
+        srv.server_close()

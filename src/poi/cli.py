@@ -1,4 +1,4 @@
-"""Command line: poi keygen | fingerprint | run | resume | verify | report | clean."""
+"""Command line: poi keygen | fingerprint | run | resume | verify | report | clean | serve | dashboard."""
 from __future__ import annotations
 
 import argparse
@@ -103,6 +103,89 @@ def cmd_clean(args) -> int:
     return 0
 
 
+def _hostport(s: str) -> tuple[str, int]:
+    host, _, port = s.rpartition(":")
+    return host or "127.0.0.1", int(port)
+
+
+def cmd_serve(args) -> int:
+    from poi.serve import make_server, new_token
+    tf = Path(args.token_file)
+    if args.new_token:
+        new_token(tf)
+        print(f"new token written to {tf}")
+    token = tf.read_text().strip()
+    run = Path(args.run_dir)
+
+    def runtime() -> dict:
+        try:
+            import docker
+            from poi.runtime import RuntimeInfo
+            from poi.runtime_info import declaration
+            return declaration(docker.from_env(), RuntimeInfo.load(run).workload_id)
+        except Exception:
+            return {"status": "unknown"}
+
+    host, port = _hostport(args.listen)
+    srv = make_server(run, token, host, port, runtime)
+    print(f"serving {run} on http://{host}:{srv.server_address[1]} (put TLS in front of it)")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def build_dashboard(args):
+    """Returns (server, mirror, url) without blocking; raises SourceError on a bad source."""
+    from poi.dashboard import DashboardApp, make_dashboard_server, new_session_key
+    from poi.fingerprint import FingerprintSet
+    from poi.mirror import Mirror
+    from poi.source import HttpSource, LocalSource
+    if args.source.startswith(("http://", "https://")):
+        if not args.token_file:
+            raise SystemExit("--token-file is required for an HTTP source")
+        source = HttpSource(args.source, Path(args.token_file).read_text().strip())
+    else:
+        source = LocalSource(Path(args.source))
+    source.policy()                                   # fail fast on a wrong URL or token
+    pubkey = args.pubkey or Path(args.pubkey_file).read_text().strip()
+    fps = None
+    if args.data:
+        policy_raw = source.policy()
+        p = pol.parse(policy_raw)
+        fps = FingerprintSet.from_dir(Path(args.data), Path(args.fp_key).read_bytes(), p.fingerprint_k, p.fingerprint_w)
+    mirror = Mirror(Path(args.mirror), source, pubkey, fps, source_label=args.source)
+    key = new_session_key()
+    host, port = _hostport(args.listen)
+    srv = make_dashboard_server(DashboardApp(mirror, args.source), key, host, port)
+    return srv, mirror, f"http://{host}:{srv.server_address[1]}/?key={key}"
+
+
+def cmd_dashboard(args) -> int:
+    import threading
+    from poi.source import SourceError
+    try:
+        srv, mirror, url = build_dashboard(args)
+    except SourceError as e:
+        print(f"cannot read the operator feed: {e}", file=sys.stderr)
+        return 2
+    stop = threading.Event()
+    threading.Thread(target=mirror.run, args=(stop,), daemon=True).start()
+    threading.Thread(target=mirror.run_runtime, args=(stop,), daemon=True).start()
+    print(f"dashboard: {url}")
+    if args.open:
+        import webbrowser
+        webbrowser.open(url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="poi", description="Proof of Isolation")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -151,6 +234,25 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("clean", help="remove the workload container and internal network")
     s.add_argument("run_dir")
     s.set_defaults(fn=cmd_clean)
+
+    s = sub.add_parser("serve", help="operator: read-only feed of a run for the data owner")
+    s.add_argument("run_dir")
+    s.add_argument("--token-file", required=True)
+    s.add_argument("--new-token", action="store_true", help="generate a new token into --token-file")
+    s.add_argument("--listen", default="127.0.0.1:8765")
+    s.set_defaults(fn=cmd_serve)
+
+    s = sub.add_parser("dashboard", help="data owner: verify a run live and show it in the browser")
+    s.add_argument("--source", required=True, help="https://… (poi serve behind TLS) or a local run directory")
+    s.add_argument("--token-file")
+    s.add_argument("--pubkey")
+    s.add_argument("--pubkey-file")
+    s.add_argument("--mirror", required=True, help="local directory that keeps the verified copy")
+    s.add_argument("--data")
+    s.add_argument("--fp-key")
+    s.add_argument("--listen", default="127.0.0.1:8780")
+    s.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
+    s.set_defaults(fn=cmd_dashboard)
     return p
 
 
