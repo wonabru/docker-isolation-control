@@ -43,3 +43,25 @@ def make_run(tmp_path: Path, key, n_egress=(2, 1)):
         led.append(t=f"2026-10-13T18:00:0{i + 1}Z", container=container, policy_digest="p" * 64,
                    accs=accs, counts=counts, ops=ops)
     return led
+
+
+POLICY = b"""
+version: 1
+on_violation: pause
+tick_seconds: 2
+output_volume: /srv/out
+forward_headers:
+  authorization: Bearer test-token
+endpoints:
+  - host: api.example.com
+    method: POST
+    path: /v1/score
+    request_schema:
+      type: object
+      additionalProperties: false
+      required: [model, count]
+      properties:
+        model: {enum: [small, large]}
+        count: {type: integer, minimum: 0, maximum: 255}
+fingerprint: {k: 32, w: 16}
+"""
