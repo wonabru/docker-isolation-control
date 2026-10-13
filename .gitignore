@@ -15,3 +15,7 @@ run/
 
 # brainstorming companion mockups
 .superpowers/
+
+# dashboard: owner mirror (may hold user data) and serve token (secret)
+/mirror/
+/serve.token
