@@ -170,3 +170,19 @@ Bezpieczeństwo UI: dane z evidence renderowane wyłącznie przez `textContent`;
 Logi workloadu; wielu właścicieli w jednym przebiegu (jeden przebieg = jeden właściciel); weryfikacja w
 przeglądarce (JS); TLS wbudowany w `poi serve` (A2: certyfikat self-signed z przypiętym odciskiem);
 publikacja do Rekor.
+
+## 11. Korekty po prototypie (2026-10-13)
+
+Mają pierwszeństwo przed wcześniejszymi sekcjami.
+
+1. `ChainVerifier.feed` jest atomowy: przy `VerifyError` stan weryfikatora się nie zmienia. Dodano
+   `verify_run(run_dir, pubkey, policy)` — przyrostowy odpowiednik `verify_chain` + `verify_policy`.
+2. Lustro zapisuje checkpoint i deltę **przed** weryfikacją (dowód nieprawidłowości zostaje), a evidence
+   tylko wtedy, gdy skrót treści zgadza się z nazwą. Lustro odmawia pracy z katalogiem utworzonym dla
+   innego klucza operatora. Checkpoint spoza kolejności od źródła → 🔴 (kod 11).
+3. `Snapshot.run_finished` wynika z deklaracji operatora `status == "exited"`.
+4. Strona pobiera `/api/summary` od razu po załadowaniu, a SSE wysyła pełne podsumowanie przy każdej
+   zmianie i co 2 s (świeży wiek checkpointu i wykrywanie braku checkpointów).
+5. `POST /api/ack/{seq}` wymaga nagłówka `x-poi: 1` (ochrona CSRF obok `SameSite=Strict`).
+6. Wysokości ogniw taśmy ustawiane przez CSSOM (`element.style`), bo CSP zabrania atrybutów `style`.
+7. `HttpSource` zgłasza `AuthError` przy 401; `poi dashboard` kończy się wtedy kodem 2.
