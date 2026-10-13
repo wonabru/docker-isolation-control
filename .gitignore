@@ -12,3 +12,6 @@ run/
 /moje_dane/
 /fp.bin
 .idea/
+
+# brainstorming companion mockups
+.superpowers/
