@@ -36,7 +36,7 @@ sieci), (2) kompletność i ograniczenie treści kanału wyjścia.
 | TLS | Proxy terminuje TLS; workload ufa wyłącznie CA proxy |
 | Ocena treści | Schemat dozwolonych żądań (twarda granica) + odciski danych użytkownika (warstwa informacyjna) |
 | Publikacja | Lokalny podpisany łańcuch checkpointów; interfejs `Publisher` pod przyszły Rekor/HTTP |
-| Śledzenie stanu | Okresowy skan warstwy `UpperDir` overlayfs + warstwy obrazu liczone raz |
+| Śledzenie stanu | Różnica względem obrazu przez API Dockera: `docker export` (genesis, pełne skany) + `docker diff` i archiwum zmienionych ścieżek (ticki) — patrz §12 |
 | Język | Python (mitmproxy, hashlib, numpy, cryptography) |
 
 ## 4. Architektura
@@ -65,14 +65,22 @@ sieci), (2) kompletność i ograniczenie treści kanału wyjścia.
 |---|---|---|
 | `poi.lthash` | Rozszerzenie elementu, `add`, `sub`, `digest`, serializacja wektora | hashlib, numpy |
 | `poi.canonical` | Kanoniczne kodowanie elementów i JSON checkpointów | — |
-| `poi.state` | Skan warstw obrazu, `UpperDir` (whiteouty, opaque dirs), wolumenu wyjściowego, elementu `config` | lthash, canonical |
+| `poi.evidence` | Magazyn treści adresowany skrótem (body, nagłówki, JSON konfiguracji) | canonical |
+| `poi.state` | Skan `docker export` / `docker diff`, wolumenu wyjściowego, elementu `config` | canonical, ledger |
 | `poi.policy` | Wczytanie `policy.yaml`, walidacja schematów, obliczanie pojemności kanału | jsonschema |
 | `poi.fingerprint` | Winnowing k-gramów, keyed BLAKE2b-64, dekodery (base64, hex, URL, gzip) | hashlib |
-| `poi.proxy` | Addon mitmproxy + stub DNS; WAL; przekazanie zdarzeń do demona | policy, fingerprint |
+| `poi.wal` | WAL proxy (zapis z `fsync`) i jego czytnik po stronie demona | canonical, evidence |
+| `poi.gate` | Logika decyzji egress niezależna od mitmproxy | policy, fingerprint, wal |
+| `poi.dnsstub` | Stub DNS logujący zapytania | wal |
+| `poi.proxy_addon` | Cienki adapter mitmproxy nad `gate` (działa w kontenerze proxy) | gate, dnsstub |
 | `poi.ledger` | Delty, evidence, checkpointy, łańcuch `prev`, podpis Ed25519, rotacja kluczy | lthash, canonical, cryptography |
 | `poi.publish` | Interfejs `Publisher`; implementacja `LocalPublisher` | ledger |
-| `poi.daemon` | Orkiestracja: uruchomienie sieci/proxy/workloadu, pętla ticków | wszystkie powyższe, docker SDK |
-| `poi.verify` | Niezależny weryfikator | **tylko** lthash, canonical, cryptography, policy |
+| `poi.engine` | Rdzeń demona: delty stanu + zdarzenia WAL → podpisane checkpointy; wznowienie | state, wal, ledger, policy |
+| `poi.runtime` | Docker: sieci, kontener proxy, kontener workloadu | docker SDK |
+| `poi.daemon` | Pętla ticków, `start`/`resume` | engine, runtime |
+| `poi.verify` | Niezależny weryfikator | **tylko** lthash, canonical, evidence, policy (+ cryptography) |
+| `poi.livecheck` | `verify --live`: ponowne przeliczenie stanu z Dockera | state, runtime |
+| `poi.report` | Raport dla użytkownika | verify, fingerprint, policy |
 | `poi.cli` | `poi run`, `poi verify`, `poi report`, `poi keygen` | — |
 
 ## 5. Kryptografia
@@ -179,7 +187,7 @@ i ostrzeżenie w raporcie).
    (zgodność skrótu evidence z elementem), zgodność elementu `config` z polityką (sieć internal,
    brak mountów rw poza `output_volume`). `--live`: przeliczenie stanu bieżącego kontenera
    i porównanie z ostatnim checkpointem.
-5. **Raport (`poi report run/ --data DIR --key KEY`)**: lokalne obliczenie odcisków danych użytkownika
+5. **Raport (`poi report run/ --data DIR --fp-key KEY`)**: lokalne obliczenie odcisków danych użytkownika
    i skan całego evidence; wynik: liczba trafień, lista prób zablokowanych, górne ograniczenie
    pojemności kanału ukrytego (bity/żądanie × liczba żądań).
 
@@ -239,3 +247,39 @@ i ostrzeżenie w raporcie).
 - eBPF: korelacja odczytów plików z egressem.
 - Rate-limit/padding redukujące kanały ukryte.
 - TEE (Intel TDX / AMD SEV-SNP) dla modelu „niezaufany host”.
+
+## 12. Korekty po prototypie (2026-10-13)
+
+Prototyp uruchomiony na docelowym hoście (Docker 29, magazyn obrazów containerd, użytkownik w grupie
+`docker` bez roota) wymusił lub uzasadnił następujące zmiany. Mają pierwszeństwo przed wcześniejszymi
+sekcjami.
+
+1. **Stan bez `UpperDir`.** `docker inspect` zwraca `GraphDriver: null`, a `/var/lib/docker` jest
+   dostępny tylko dla roota. Stan liczony jest przez API: genesis i pełne skany z `docker export`
+   (dla obrazu — z tymczasowego, nieuruchomionego kontenera), ticki z `docker diff` + `GET/HEAD
+   /containers/{id}/archive` dla zmienionych ścieżek (cache po stat: rozmiar, mtime, tryb). Semantyka
+   jest ta sama (różnica względem obrazu). Co `full_scan_every` ticków (domyślnie 60) wykonywany jest
+   pełny skan. Punkty montowania są wyłączone ze skanu plików (atestuje je element `config`).
+   Hardlinki są haszowane jak zwykłe pliki z treścią celu (tak jak zwraca je `docker cp`).
+2. **WAL zamiast gniazda.** Proxy zapisuje zdarzenia do `proxy-wal/events.jsonl` (z `fsync`, przed
+   przekazaniem ruchu), a demon czyta plik przyrostowo. Jeden licznik `seq` dla HTTP i DNS.
+3. **Normalizacja ruchu wychodzącego.** Proxy odrzuca wszystkie nagłówki klienta i wysyła tylko
+   `content-type: application/json` + `forward_headers` z polityki; body jest ponownie serializowane
+   kanonicznie. Usuwa to kanały w nagłówkach i formatowaniu JSON, więc pojemność kanału wynika
+   wyłącznie ze schematu. Query string jest zawsze blokowany.
+4. **Nowe pola polityki:** `forward_headers` (np. token API wstrzykiwany przez proxy — plik polityki
+   trafia do audytorów), `upstream_insecure` (tylko testy), `fingerprint.w` (okno winnowingu, domyślnie
+   16), `max_requests_per_minute` na endpoint.
+5. **Trafienie odcisku blokuje żądanie** (powód `fingerprint`), nawet jeśli schemat je dopuszcza.
+6. **Proxy w kontenerze** `poi-proxy` (python:3.12-slim + mitmproxy) z UID użytkownika; DNS na porcie
+   53 dzięki `net.ipv4.ip_unprivileged_port_start=0`. Sieć wewnętrzna ma jawną podsieć
+   `10.231.X.0/24`, proxy stały adres `.2`. Workload dostaje CA przez `SSL_CERT_FILE`,
+   `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`.
+7. **Reguły konfiguracji** (`policy.config_violations`) dopuszczają montowania tylko do odczytu oraz
+   jeden montaż rw w `output_volume`.
+8. **Czas checkpointu** jest wymuszany jako niemalejący (max z zegarem i poprzednim checkpointem).
+9. **Po zakończeniu** `poi run` usuwa proxy i sieć zewnętrzną, ale zostawia zatrzymany workload i sieć
+   wewnętrzną dla `poi verify --live`; `poi clean` sprząta resztę.
+10. **Dodatkowe ograniczenie:** zmiana właściciela pliku bez zmiany mtime/rozmiaru/trybu jest
+    wykrywana dopiero przy pełnym skanie (nie jest to kanał wycieku).
+11. **Python ≥ 3.12** (mitmproxy 11+); host używa `uv`.
