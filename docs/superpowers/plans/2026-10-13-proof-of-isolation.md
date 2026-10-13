@@ -15,7 +15,7 @@
 
 ## Global Constraints
 
-- Python `>=3.12`; zależności: `numpy>=1.26`, `cryptography>=42`, `jsonschema>=4.21`, `pyyaml>=6`, `docker>=7`, `dnslib>=0.9.24`; dev: `pytest>=8`, `hypothesis>=6.100`; proxy (tylko w obrazie): `mitmproxy>=11,<13`.
+- Python `>=3.12`; zależności: `numpy>=1.26`, `cryptography>=42`, `jsonschema>=4.21`, `pyyaml>=6`, `docker>=7`, `dnslib>=0.9.24`; dev: `pytest>=8`, `hypothesis>=6.100`, `pyflakes>=3`; proxy (tylko w obrazie): `mitmproxy>=11,<13`.
 - Środowisko: `uv venv --python 3.12 .venv`; wszystkie komendy przez `.venv/bin/...`. Układ `src/` (pakiet `poi`), testy w `tests/` importują wspólne buildery przez `from helpers import ...`.
 - LtHash16: n = 1024 × uint16 little-endian (2048 B), arytmetyka mod 2¹⁶; expand = 32 bloki `blake2b(i.to_bytes(4,'big') ‖ e, digest_size=64, person=b"poi-lthash-v1")`; digest = `blake2b(vec, digest_size=32, person=b"poi-digest-v1")`.
 - Skrót treści wszędzie: BLAKE2b-256 hex bez personalizacji (`canonical.b2b256`). Kanoniczny JSON: posortowane klucze, separatory `,` `:`, UTF-8.
@@ -71,7 +71,7 @@ dependencies = [
 
 [project.optional-dependencies]
 proxy = ["mitmproxy>=11"]
-dev = ["pytest>=8", "hypothesis>=6.100"]
+dev = ["pytest>=8", "hypothesis>=6.100", "pyflakes>=3"]
 
 [project.scripts]
 poi = "poi.cli:main"

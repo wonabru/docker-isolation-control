@@ -1,0 +1,18 @@
+version: 1
+on_violation: alert
+tick_seconds: 1
+output_volume: /srv/out
+endpoints:
+  - host: api.test
+    method: POST
+    path: /v1/score
+    max_requests_per_minute: 30
+    request_schema:
+      type: object
+      additionalProperties: false
+      required: [model, count]
+      properties:
+        model: {enum: [small, large]}
+        count: {type: integer, minimum: 0, maximum: 255}
+        note: {type: string, maxLength: 200}
+fingerprint: {k: 32, w: 16}

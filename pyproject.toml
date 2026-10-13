@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "poi"
+version = "0.1.0"
+description = "Proof of Isolation: homomorphic-hash attestation that data does not leave a Docker container"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.26",
+  "cryptography>=42",
+  "jsonschema>=4.21",
+  "pyyaml>=6",
+  "docker>=7",
+  "dnslib>=0.9.24",
+]
+
+[project.optional-dependencies]
+proxy = ["mitmproxy>=11"]
+dev = ["pytest>=8", "hypothesis>=6.100", "pyflakes>=3"]
+
+[project.scripts]
+poi = "poi.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/poi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["docker: requires a running Docker daemon (deselect with -m 'not docker')"]
