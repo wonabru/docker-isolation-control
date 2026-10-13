@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 proxy = ["mitmproxy>=11"]
-dev = ["pytest>=8", "hypothesis>=6.100"]
+dev = ["pytest>=8", "hypothesis>=6.100", "pyflakes>=3"]
 
 [project.scripts]
 poi = "poi.cli:main"
