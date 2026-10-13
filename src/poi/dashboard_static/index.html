@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>poi · isolation proof</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand"><span class="mark">poi</span><span class="sub">Proof of isolation</span></div>
+    <div class="source" id="source"></div>
+    <button class="ghost" id="alerts" type="button">Turn on alerts</button>
+  </header>
+
+  <main>
+    <section class="verdict" id="verdict" data-level="pending" aria-live="polite">
+      <svg class="seal" id="seal" viewBox="0 0 200 200" role="img" aria-label="Verification seal"></svg>
+      <div class="verdict-text">
+        <p class="eyebrow">Your data, as verified on this computer</p>
+        <h1 id="verdict-word">Connecting…</h1>
+        <p class="lede" id="verdict-lede">Fetching the operator's checkpoints.</p>
+        <ul class="reasons" id="reasons"></ul>
+        <p class="meta" id="last"></p>
+      </div>
+    </section>
+
+    <section class="tiles" aria-label="Totals">
+      <div class="tile"><span class="label">Requests sent</span><span class="value" id="t-sent">–</span><span class="note">all within policy</span></div>
+      <div class="tile"><span class="label">Attempts blocked</span><span class="value" id="t-blocked">–</span><span class="note" id="t-dns"></span></div>
+      <div class="tile"><span class="label">Your data found in traffic</span><span class="value" id="t-hits">–</span><span class="note" id="t-hits-note"></span></div>
+      <div class="tile"><span class="label">Covert channel limit</span><span class="value" id="t-cap">–</span><span class="note">upper bound across all sent requests</span></div>
+    </section>
+
+    <section class="custody">
+      <div class="section-head">
+        <h2>Chain of custody</h2>
+        <p class="hint">One link per signed checkpoint. Select a link to see what changed.</p>
+      </div>
+      <div class="tape" id="tape" role="list"></div>
+    </section>
+
+    <div class="lower">
+      <section class="feed">
+        <div class="section-head">
+          <h2>Outbound traffic</h2>
+          <div class="filters" role="group" aria-label="Filter traffic">
+            <button type="button" data-kind="all" aria-pressed="true">All</button>
+            <button type="button" data-kind="allowed" aria-pressed="false">Sent</button>
+            <button type="button" data-kind="blocked" aria-pressed="false">Blocked</button>
+            <button type="button" data-kind="dns" aria-pressed="false">DNS</button>
+          </div>
+        </div>
+        <ol class="events" id="events"></ol>
+        <p class="empty" id="events-empty" hidden>No outbound traffic yet. Every request the container makes will appear here.</p>
+      </section>
+
+      <aside class="operator" aria-labelledby="op-title">
+        <h2 id="op-title">Operator says</h2>
+        <p class="caveat">Reported by the operator's server. This cannot be verified and never changes the verdict.</p>
+        <dl id="operator"></dl>
+      </aside>
+    </div>
+  </main>
+
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="drawer-title">
+    <div class="drawer-head">
+      <h2 id="drawer-title">Details</h2>
+      <button class="ghost" id="drawer-close" type="button">Close</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
