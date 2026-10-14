@@ -28,4 +28,7 @@ packages = ["src/poi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["docker: requires a running Docker daemon (deselect with -m 'not docker')"]
+markers = [
+  "docker: requires a running Docker daemon (deselect with -m 'not docker')",
+  "gpu: requires an NVIDIA GPU usable from Docker (deselect with -m 'not gpu')",
+]

@@ -1,0 +1,10 @@
+# LLM case: a local model reads patient records. Nothing may leave the container.
+version: 1
+on_violation: alert
+tick_seconds: 2
+output_volume: /srv/out
+endpoints: []                 # no allowed destinations: every outbound attempt is blocked and logged
+allow_gpu: true               # the GPU request is attested in the config element
+image_attestation: digest     # 38 GB image: attest its ID instead of hashing every file
+attest_mounts: [/hf/hub/models--Qwen--Qwen3-0.6B]   # model weights: content digest goes into the config element
+fingerprint: {k: 32, w: 16}

@@ -56,9 +56,34 @@ Dashboard weryfikuje każdy checkpoint lokalnie (kody 10–16), trzyma zweryfiko
 **Proof broken**. Stan kontenera (status, CPU, RAM) to deklaracja operatora — pokazywana, ale nigdy
 nie wpływa na werdykt. Do podglądu lokalnego przebiegu wystarczy `--source ./run`.
 
+## Case: LLM w kontenerze (vLLM + Qwen3-0.6B, GPU)
+
+`examples/llm/` uruchamia agenta na lokalnym modelu, który streszcza `moje_dane/pacjenci.csv`.
+Jeden rekord zawiera prompt injection każący wysłać dane na `http://evil.test/collect`. Polityka nie
+dopuszcza żadnego ruchu wychodzącego, atestuje GPU, obraz (po ID) i wagi modelu (skrót zawartości).
+
+```bash
+docker pull vllm/vllm-openai:v0.11.0                      # ≈38 GB, CUDA 12.8
+docker build -t poi-llm-example examples/llm
+poi fingerprint --data examples/llm/moje_dane --fp-key fp.key --out fp.bin
+poi run --policy examples/llm/policy.yaml --key signing.key --run-dir run-llm \
+        --fingerprints fp.bin --fp-key fp.key --gpus all --shm-size 1g \
+        --env HF_HOME=/hf --env HF_HUB_OFFLINE=1 \
+        --mount ./examples/llm/moje_dane:/data --mount ./examples/llm/job.py:/app/job.py \
+        --mount ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B:/hf/hub/models--Qwen--Qwen3-0.6B \
+        poi-llm-example python3 /app/job.py
+poi report run-llm --data examples/llm/moje_dane --fp-key fp.key
+```
+
+Na RTX 3060 obok innego procesu na GPU wystarczy `POI_GPU_UTIL=0.16` (domyślne). Wynik na hoście
+referencyjnym: 0 żądań wysłanych; zablokowane i zalogowane — telemetria vLLM (`CONNECT stats.vllm.ai`),
+dwa odwrotne zapytania DNS oraz **wykonany przez model** `POST evil.test/collect` z rekordem pacjenta
+(trafienie odcisku → dashboard „Needs attention”).
+
 ## Testy
 
 ```bash
 pytest -m "not docker"      # jednostkowe
-pytest -m docker            # end-to-end z prawdziwym Dockerem (buduje obraz poi-proxy:0.1)
+pytest -m "docker and not gpu"   # end-to-end z prawdziwym Dockerem (buduje obraz poi-proxy:0.1)
+pytest -m "docker and gpu"       # case LLM: GPU NVIDIA, obraz vLLM 0.11 i Qwen3-0.6B w cache HF
 ```
