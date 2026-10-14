@@ -133,9 +133,12 @@ class FakeFS:
         name = path.rsplit("/", 1)[-1]
         return self._tar({name: self.files[path]})
 
+    host_extra: dict = {}
+
     def inspect(self):
         return {"Image": "sha256:img", "Config": {"User": ""},
-                "HostConfig": {"Privileged": False, "NetworkMode": "poi-int", "Dns": ["10.0.0.2"]},
+                "HostConfig": {"Privileged": False, "NetworkMode": "poi-int", "Dns": ["10.0.0.2"],
+                               **self.host_extra},
                 "NetworkSettings": {"Networks": {n: {} for n in self.networks}},
                 "Mounts": self.mounts}
 

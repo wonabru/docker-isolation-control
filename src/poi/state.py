@@ -132,10 +132,53 @@ def scan_host_dir(host_dir: Path, target: str) -> dict[str, bytes]:
     return out
 
 
-def config_doc(inspect: dict, network_internal) -> dict:
+def mount_content_digest(host_dir: Path, cache: dict | None = None) -> str:
+    """BLAKE2b-256 over [relative path, type, content digest] of every entry under a host directory.
+
+    Symlinks contribute their target; file digests are cached by (path, size, mtime, inode, ctime).
+    Full scans start from an empty cache, so a same-size rewrite within one timestamp tick is caught there.
+    """
+    cache = {} if cache is None else cache
+    host_dir = Path(host_dir)
+    entries = []
+    for root, dirs, files in os.walk(host_dir):
+        dirs.sort()
+        for name in sorted(files) + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
+            p = Path(root) / name
+            rel = str(p.relative_to(host_dir))
+            s = os.lstat(p)
+            if st.S_ISLNK(s.st_mode):
+                entries.append([rel, "symlink", os.readlink(p)])
+            elif st.S_ISREG(s.st_mode):
+                key = (str(p), s.st_size, s.st_mtime_ns, s.st_ino, s.st_ctime_ns)
+                if key not in cache:
+                    with open(p, "rb") as f:
+                        cache[key] = _digest_stream(f)
+                entries.append([rel, "file", cache[key]])
+    return c.b2b256(c.canonical_json(entries))
+
+
+def _gpus(hc: dict) -> list[dict]:
+    out = []
+    for r in hc.get("DeviceRequests") or []:
+        caps = sorted({cap for group in (r.get("Capabilities") or []) for cap in group})
+        if "gpu" in caps or r.get("Driver") == "nvidia":
+            out.append({"count": r.get("Count", 0), "capabilities": caps, "driver": r.get("Driver", "")})
+    return out
+
+
+def config_doc(inspect: dict, network_internal, mount_content: dict[str, str] | None = None) -> dict:
     """Security-relevant container configuration (spec §5.2 `config`)."""
     hc = inspect["HostConfig"]
     nets = inspect["NetworkSettings"]["Networks"] or {}
+    mount_content = mount_content or {}
+
+    def mount(m: dict) -> dict:
+        out = {"destination": m["Destination"], "rw": bool(m["RW"]), "type": m["Type"]}
+        if m["Destination"] in mount_content:
+            out["content"] = mount_content[m["Destination"]]
+        return out
+
     return {
         "image": inspect["Image"],
         "user": inspect["Config"].get("User", ""),
@@ -143,12 +186,13 @@ def config_doc(inspect: dict, network_internal) -> dict:
         "cap_add": sorted(hc.get("CapAdd") or []),
         "network_mode": hc.get("NetworkMode", ""),
         "networks": [{"name": n, "internal": network_internal(n)} for n in sorted(nets)],
-        "mounts": sorted(({"destination": m["Destination"], "rw": bool(m["RW"]), "type": m["Type"]}
-                          for m in inspect.get("Mounts", [])), key=lambda m: m["destination"]),
+        "mounts": sorted((mount(m) for m in inspect.get("Mounts", [])), key=lambda m: m["destination"]),
         "dns": list(hc.get("Dns") or []),
         "pid_mode": hc.get("PidMode", ""),
         "ipc_mode": hc.get("IpcMode", ""),
         "devices": len(hc.get("Devices") or []),
+        "gpus": _gpus(hc),
+        "shm_size": hc.get("ShmSize") or 0,
     }
 
 
