@@ -47,6 +47,9 @@ class Policy:
     fingerprint_w: int = 16
     upstream_insecure: bool = False
     forward_headers: dict[str, str] = field(default_factory=dict)
+    allow_gpu: bool = False
+    image_attestation: str = "files"          # "files": hash every image file; "digest": trust the image ID
+    attest_mounts: list[str] = field(default_factory=list)
 
     @property
     def digest(self) -> str:
@@ -92,6 +95,8 @@ def parse(raw: bytes) -> Policy:
         raise PolicyError("policy must be a mapping with version: 1")
     if d.get("on_violation", "pause") not in ("pause", "alert"):
         raise PolicyError("on_violation must be pause or alert")
+    if d.get("image_attestation", "files") not in ("files", "digest"):
+        raise PolicyError("image_attestation must be files or digest")
     eps = []
     for e in d.get("endpoints", []):
         schema = e["request_schema"]
@@ -103,7 +108,10 @@ def parse(raw: bytes) -> Policy:
                   tick_seconds=float(d.get("tick_seconds", 5)), output_volume=d.get("output_volume"),
                   fingerprint_k=int(fp.get("k", 32)), fingerprint_w=int(fp.get("w", 16)),
                   upstream_insecure=bool(d.get("upstream_insecure", False)),
-                  forward_headers=dict(d.get("forward_headers", {})))
+                  forward_headers=dict(d.get("forward_headers", {})),
+                  allow_gpu=bool(d.get("allow_gpu", False)),
+                  image_attestation=d.get("image_attestation", "files"),
+                  attest_mounts=list(d.get("attest_mounts", [])))
 
 
 # --- channel capacity (spec §6.3) -------------------------------------------
@@ -185,4 +193,15 @@ def config_violations(doc: dict, policy: Policy) -> list[str]:
     for m in doc.get("mounts", []):
         if m["rw"] and m["destination"] != policy.output_volume:
             v.append(f"undeclared read-write mount: {m['destination']}")
+    if doc.get("gpus") and not policy.allow_gpu:
+        v.append("GPU attached but not allowed by policy")
+    mounts = {m["destination"]: m for m in doc.get("mounts", [])}
+    for dest in policy.attest_mounts:
+        m = mounts.get(dest)
+        if m is None:
+            v.append(f"attested mount missing: {dest}")
+        elif m["rw"]:
+            v.append(f"attested mount must be read-only: {dest}")
+        elif not m.get("content"):
+            v.append(f"attested mount has no content digest: {dest}")
     return v

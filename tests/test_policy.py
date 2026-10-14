@@ -78,3 +78,39 @@ def test_config_ok():
 def test_config_violations(kw):
     from poi.policy import config_violations
     assert config_violations(_doc(**kw), parse(POLICY))
+
+
+def test_llm_policy_fields_default_and_parse():
+    p = parse(POLICY)
+    assert (p.allow_gpu, p.image_attestation, p.attest_mounts) == (False, "files", [])
+    q = parse(POLICY + b"allow_gpu: true\nimage_attestation: digest\nattest_mounts: [/hf]\n")
+    assert (q.allow_gpu, q.image_attestation, q.attest_mounts) == (True, "digest", ["/hf"])
+    with pytest.raises(PolicyError):
+        parse(POLICY + b"image_attestation: maybe\n")
+
+
+def test_gpu_needs_policy_permission():
+    from poi.policy import config_violations
+    doc = _doc(gpus=[{"count": -1, "capabilities": ["gpu"], "driver": ""}])
+    assert "GPU attached but not allowed by policy" in config_violations(doc, parse(POLICY))
+    assert config_violations(doc, parse(POLICY + b"allow_gpu: true\n")) == []
+
+
+@pytest.mark.parametrize("mounts,phrase", [
+    ([], "attested mount missing: /hf"),
+    ([{"destination": "/hf", "rw": True, "type": "bind", "content": "c" * 64}], "must be read-only"),
+    ([{"destination": "/hf", "rw": False, "type": "bind"}], "no content digest"),
+])
+def test_attested_mount_rules(mounts, phrase):
+    from poi.policy import config_violations
+    pol = parse(POLICY + b"attest_mounts: [/hf]\n")
+    base = [{"destination": "/srv/out", "rw": True, "type": "bind"}]
+    assert any(phrase in v for v in config_violations(_doc(mounts=base + mounts), pol))
+
+
+def test_attested_mount_ok():
+    from poi.policy import config_violations
+    pol = parse(POLICY + b"attest_mounts: [/hf]\n")
+    mounts = [{"destination": "/srv/out", "rw": True, "type": "bind"},
+              {"destination": "/hf", "rw": False, "type": "bind", "content": "c" * 64}]
+    assert config_violations(_doc(mounts=mounts), pol) == []
