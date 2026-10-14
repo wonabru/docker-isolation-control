@@ -43,3 +43,55 @@ def test_config_doc_gpus_shm_and_mount_content():
     assert doc["mounts"] == [{"destination": "/hf", "rw": False, "type": "bind", "content": "d" * 64}]
     plain = config_doc(FakeFS(IMAGE).inspect(), fs.network_internal)
     assert plain["gpus"] == [] and plain["shm_size"] == 0
+
+
+def _apply(h, ops):
+    for op in ops:
+        (h.add if op.op == "add" else h.sub)(op.element)
+    return h
+
+
+class NoExportFS(FakeFS):
+    def export(self):
+        raise AssertionError("digest mode must not export the filesystem")
+
+    def export_image(self):
+        raise AssertionError("digest mode must not export the image")
+
+
+def test_digest_mode_tracks_only_the_diff():
+    fs = NoExportFS(IMAGE)
+    tr = StateTracker(fs, image_mode="digest")
+    tr.load_image()
+    h = _apply(LtHash(), tr.update())
+    assert list(tr.index) == ["\0config"]                     # image files are not enumerated
+    fs.write("/tmp", None)
+    fs.write("/tmp/cache.bin", b"x")
+    fs.write("/etc/os", b"changed")
+    fs.delete("/opt")
+    h = _apply(h, tr.update())
+    assert set(tr.index) == {"\0config", "/tmp", "/tmp/cache.bin", "/etc/os", "/opt", "/opt/lib.so"}
+    assert tr.index["/opt"].split(b"\0")[2] == b"deleted"
+    full = StateTracker(fs, image_mode="digest")
+    assert h == LtHash.of(full.target(full=True).values())   # live check agrees without exporting
+    fs.delete("/tmp/cache.bin")
+    h = _apply(h, tr.update(full=True))
+    assert "/tmp/cache.bin" not in tr.index and h == LtHash.of(tr.index.values())
+
+
+def test_attested_mount_change_changes_config(tmp_path):
+    d = _model_dir(tmp_path)
+    fs = FakeFS(IMAGE, mounts=[{"Destination": "/hf", "RW": False, "Type": "bind", "Source": str(d)}])
+    tr = StateTracker(fs, image_mode="digest", attest_mounts=("/hf",))
+    tr.load_image()
+    tr.update()
+    assert b'"content":' in tr.last_config
+    assert tr.update() == []
+    (d / "blobs" / "w1").write_bytes(b"swapped model")
+    ops = tr.update(full=True)                                  # full scans re-hash attested mounts
+    assert [o.op for o in ops] == ["sub", "add"] and ops[1].element.startswith(b"config\0")
+
+
+def test_unknown_image_mode_rejected():
+    with pytest.raises(ValueError):
+        StateTracker(FakeFS(IMAGE), image_mode="layers")

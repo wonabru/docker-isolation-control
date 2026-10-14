@@ -208,21 +208,34 @@ class _Cached:
 
 class StateTracker:
     def __init__(self, fs: ContainerFS, output: tuple[Path, str] | None = None,
-                 retries: int = 3) -> None:
+                 retries: int = 3, image_mode: str = "files", attest_mounts: tuple[str, ...] = ()) -> None:
+        if image_mode not in ("files", "digest"):
+            raise ValueError("image_mode must be files or digest")
         self.fs = fs
         self.output = output
         self.retries = retries
+        self.image_mode = image_mode
+        self.attest_mounts = tuple(attest_mounts)
         self.index: dict[str, bytes] = {}
         self.image_index: dict[str, bytes] = {}
         self._cache: dict[str, _Cached] = {}
+        self._mount_cache: dict = {}
         self.last_config: bytes = b""
 
     # -- helpers --------------------------------------------------------------
     def _excludes(self, inspect: dict) -> tuple[str, ...]:
         return tuple(sorted(m["Destination"] for m in inspect.get("Mounts", [])))
 
+    def _mount_content(self, inspect: dict) -> dict[str, str]:
+        out = {}
+        for m in inspect.get("Mounts", []):
+            src = m.get("Source")
+            if m["Destination"] in self.attest_mounts and src and Path(src).is_dir():
+                out[m["Destination"]] = mount_content_digest(Path(src), self._mount_cache)
+        return out
+
     def _config(self, inspect: dict) -> tuple[str, bytes]:
-        raw = config_bytes(config_doc(inspect, self.fs.network_internal))
+        raw = config_bytes(config_doc(inspect, self.fs.network_internal, self._mount_content(inspect)))
         self.last_config = raw
         return c.b2b256(raw), c.config_element(c.b2b256(raw))
 
@@ -244,12 +257,36 @@ class StateTracker:
 
     # -- public API -------------------------------------------------------------
     def load_image(self) -> None:
+        if self.image_mode == "digest":      # the image ID in the config element attests the image
+            self.image_index = {}
+            return
         self.image_index = scan_tar(self.fs.export_image(), self._excludes(self.fs.inspect()))
 
+    def _digest_target(self, excludes: tuple[str, ...], full: bool) -> dict[str, bytes]:
+        """Image identity comes from the config element; state is the container's diff only."""
+        if full:
+            self._cache.clear()
+        t: dict[str, bytes] = {}
+        for d in self.fs.diff():
+            p = d["Path"]
+            if _excluded(p, excludes):
+                continue
+            if d["Kind"] == KIND_DELETED:
+                t[p] = c.file_element(p, "deleted", 0, 0, 0, "")
+            else:
+                el = self._element(p)
+                if el is not None:
+                    t[p] = el
+        return t
+
     def target(self, full: bool = False) -> dict[str, bytes]:
+        if full:
+            self._mount_cache.clear()
         inspect = self.fs.inspect()
         excludes = self._excludes(inspect)
-        if full:
+        if self.image_mode == "digest":
+            t = self._digest_target(excludes, full)
+        elif full:
             t = scan_tar(self.fs.export(), excludes)
         else:
             t = dict(self.image_index)
