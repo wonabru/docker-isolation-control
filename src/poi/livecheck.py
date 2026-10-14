@@ -18,4 +18,6 @@ def live_state(run_dir: Path, client=None) -> LtHash:
     policy = pol.load(run_dir / "policy.yaml")
     output = (run_dir / "out", policy.output_volume) if policy.output_volume else None
     fs = DockerContainerFS(client, client.containers.get(info.workload_id))
-    return LtHash.of(StateTracker(fs, output).target(full=True).values())
+    tracker = StateTracker(fs, output, image_mode=policy.image_attestation,
+                           attest_mounts=tuple(policy.attest_mounts))
+    return LtHash.of(tracker.target(full=True).values())

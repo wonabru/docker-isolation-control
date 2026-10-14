@@ -29,12 +29,16 @@ class RunSpec:
     fingerprints: tuple[Path, bytes] | None = None
     extra_ro_mounts: dict[str, str] | None = None
     max_ticks: int | None = None
+    gpus: str | None = None
+    shm_size: str | None = None
+    env: dict[str, str] | None = None
 
 
 def _engine(client, rt: Runtime, policy: pol.Policy, key_path: Path) -> Engine:
     w = rt.workload()
     output = (rt.run_dir / "out", policy.output_volume) if policy.output_volume else None
-    tracker = StateTracker(DockerContainerFS(client, w), output)
+    tracker = StateTracker(DockerContainerFS(client, w), output, image_mode=policy.image_attestation,
+                           attest_mounts=tuple(policy.attest_mounts))
     on_violation = rt.pause if policy.on_violation == "pause" else (lambda v: log.warning("violation: %s", v))
     return Engine(Ledger(rt.run_dir, load_key(key_path)), tracker, WalReader(rt.run_dir / "proxy-wal"),
                   LocalPublisher(rt.run_dir), policy, {"id": w.id, "image": w.attrs["Image"]},
@@ -67,7 +71,8 @@ def start(spec: RunSpec, client=None) -> Runtime:
     ensure_proxy_image(client)
     rt = Runtime(client, spec.run_dir)
     rt.prepare(spec.policy_path, spec.fingerprints, policy.upstream_insecure)
-    rt.create_workload(spec.image, spec.command, policy.output_volume, spec.extra_ro_mounts)
+    rt.create_workload(spec.image, spec.command, policy.output_volume, spec.extra_ro_mounts,
+                       spec.gpus, spec.shm_size, spec.env)
     engine = _engine(client, rt, policy, spec.key_path)
     engine.genesis()
     rt.workload().start()

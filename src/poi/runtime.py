@@ -113,7 +113,8 @@ class Runtime:
         raise TimeoutError("proxy did not become ready")
 
     def create_workload(self, image: str, command: list[str] | None, output_target: str | None,
-                        extra_ro_mounts: dict[str, str] | None = None):
+                        extra_ro_mounts: dict[str, str] | None = None, gpus: str | None = None,
+                        shm_size: str | None = None, env: dict[str, str] | None = None):
         """Create (not start) the workload: internal network only, proxy env, CA, DNS → stub."""
         i = self.info
         proxy_url = f"http://{i.proxy_ip}:{PROXY_PORT}"
@@ -122,12 +123,19 @@ class Runtime:
             volumes[str(self.run_dir / "out")] = {"bind": output_target, "mode": "rw"}
         for host, target in (extra_ro_mounts or {}).items():
             volumes[str(Path(host).resolve())] = {"bind": target, "mode": "ro"}
-        env = {k: proxy_url for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")}
+        env = dict(env or {})                    # poi's proxy and CA settings always win
+        env.update({k: proxy_url for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")})
         env.update({k: CA_IN_WORKLOAD for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
                                                  "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")})
+        extra = {}
+        if gpus:
+            count = -1 if gpus == "all" else int(gpus)
+            extra["device_requests"] = [docker.types.DeviceRequest(count=count, capabilities=[["gpu"]])]
+        if shm_size:
+            extra["shm_size"] = shm_size
         w = self.client.containers.create(
             image, command=command, name=f"poi-{i.run_id}-workload", network=i.int_network,
-            dns=[i.proxy_ip], environment=env, volumes=volumes)
+            dns=[i.proxy_ip], environment=env, volumes=volumes, **extra)
         i.workload_id = w.id
         i.save(self.run_dir)
         return w

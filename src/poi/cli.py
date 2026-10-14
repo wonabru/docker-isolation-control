@@ -40,8 +40,9 @@ def cmd_run(args) -> int:
     from poi import daemon
     fps = (Path(args.fingerprints), Path(args.fp_key).read_bytes()) if args.fingerprints else None
     mounts = dict(m.split(":", 1) for m in args.mount)
+    env = dict(e.split("=", 1) for e in args.env)
     spec = daemon.RunSpec(Path(args.run_dir), Path(args.policy), Path(args.key), args.image,
-                          args.cmd or None, fps, mounts)
+                          args.cmd or None, fps, mounts, gpus=args.gpus, shm_size=args.shm_size, env=env)
     rt = daemon.start(spec)
     rt.teardown(keep_workload=not args.rm)
     return 0
@@ -210,6 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fp-key")
     s.add_argument("--mount", action="append", default=[], help="HOST:TARGET read-only mount")
     s.add_argument("--rm", action="store_true", help="remove the workload container at the end")
+    s.add_argument("--gpus", help="'all' or a number of GPUs to attach (policy must set allow_gpu)")
+    s.add_argument("--shm-size", help="size of /dev/shm, e.g. 1g")
+    s.add_argument("--env", action="append", default=[], help="KEY=VALUE for the workload")
     s.add_argument("image")
     s.add_argument("cmd", nargs=argparse.REMAINDER)
     s.set_defaults(fn=cmd_run)
