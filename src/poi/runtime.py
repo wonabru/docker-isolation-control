@@ -50,6 +50,13 @@ def ensure_proxy_image(client: docker.DockerClient, tag: str = PROXY_IMAGE) -> N
         build_proxy_image(client, tag)
 
 
+def root_rm(client: docker.DockerClient, path: Path, image: str = PROXY_IMAGE) -> None:
+    """Remove the contents of a host directory as uid 0 (files the workload wrote belong to root)."""
+    client.containers.run(image, entrypoint=["sh", "-c", "rm -rf /w/* /w/.[!.]* 2>/dev/null; true"],
+                          user="0:0", network_mode="none", remove=True,
+                          volumes={str(path): {"bind": "/w", "mode": "rw"}})
+
+
 class Runtime:
     def __init__(self, client: docker.DockerClient, run_dir: Path, info: RuntimeInfo | None = None) -> None:
         self.client = client
@@ -68,30 +75,39 @@ class Runtime:
                     raise
         raise RuntimeError("no free 10.231.x.0/24 subnet for the internal network")
 
-    def prepare(self, policy_path: Path, fingerprints: tuple[Path, bytes] | None = None,
-                upstream_insecure: bool = False, proxy_image: str = PROXY_IMAGE) -> RuntimeInfo:
-        """Create networks and start the proxy. Copies policy (and fingerprints) into the run dir."""
+    def prepare(self, policy_path: Path, fingerprints: tuple[Path, bytes | None] | None = None,
+                upstream_insecure: bool = False, proxy_image: str = PROXY_IMAGE, run_id: str | None = None,
+                secrets_dir: Path | None = None, no_logs: bool = False) -> RuntimeInfo:
+        """Create networks and start the proxy. Copies policy (and fingerprints) into the run dir.
+
+        Sealed mode passes `secrets_dir` (tmpfs, mounted read-only into the proxy), no fingerprint key
+        and `no_logs` (mitmdump prints request lines)."""
         self.run_dir.mkdir(parents=True, exist_ok=True)
         for d in ("ca", "proxy-wal", "evidence", "out"):
             (self.run_dir / d).mkdir(exist_ok=True)
         shutil.copyfile(policy_path, self.run_dir / "policy.yaml")
         if fingerprints is not None:
             shutil.copyfile(fingerprints[0], self.run_dir / "fingerprints.bin")
-            kp = self.run_dir / "fingerprint.key"
-            kp.write_bytes(fingerprints[1])
-            os.chmod(kp, 0o600)
-        run_id = uuid.uuid4().hex[:8]
+            if fingerprints[1] is not None:
+                kp = self.run_dir / "fingerprint.key"
+                kp.write_bytes(fingerprints[1])
+                os.chmod(kp, 0o600)
+        run_id = run_id or uuid.uuid4().hex[:8]
         net, subnet = self._create_internal_network(f"poi-{run_id}-int")
         ext = self.client.networks.create(f"poi-{run_id}-ext", driver="bridge")
         proxy_ip = str(subnet.network_address + 2)
         self.info = RuntimeInfo(run_id, net.name, ext.name, proxy_ip)
         cmd = ["--set", "ssl_insecure=true"] if upstream_insecure else []
+        volumes = {str(self.run_dir): {"bind": "/run/poi", "mode": "rw"}}
+        if secrets_dir is not None:
+            volumes[str(secrets_dir)] = {"bind": SECRETS_IN_PROXY, "mode": "ro"}
+        extra = {"log_config": docker.types.LogConfig(type="none")} if no_logs else {}
         proxy = self.client.containers.create(
             proxy_image, command=cmd, name=f"poi-{run_id}-proxy", network=ext.name,
             user=f"{os.getuid()}:{os.getgid()}",
             environment={"POI_PROXY_IP": proxy_ip},
             sysctls={"net.ipv4.ip_unprivileged_port_start": "0"},
-            volumes={str(self.run_dir): {"bind": "/run/poi", "mode": "rw"}})
+            volumes=volumes, **extra)
         net.connect(proxy, ipv4_address=proxy_ip)
         proxy.start()
         self.info.proxy_id = proxy.id
@@ -105,7 +121,11 @@ class Runtime:
         while time.monotonic() < deadline:
             proxy.reload()
             if proxy.status == "exited":
-                raise RuntimeError("proxy exited:\n" + proxy.logs().decode(errors="replace"))
+                try:
+                    logs = proxy.logs().decode(errors="replace")
+                except APIError:
+                    logs = "(proxy logs disabled)"
+                raise RuntimeError("proxy exited:\n" + logs)
             if ca.exists():
                 probe = "import socket; socket.create_connection(('127.0.0.1', %d), 1)" % PROXY_PORT
                 if proxy.exec_run(["python", "-c", probe]).exit_code == 0:
@@ -115,13 +135,17 @@ class Runtime:
 
     def create_workload(self, image: str, command: list[str] | None, output_target: str | None,
                         extra_ro_mounts: dict[str, str] | None = None, gpus: str | None = None,
-                        shm_size: str | None = None, env: dict[str, str] | None = None):
-        """Create (not start) the workload: internal network only, proxy env, CA, DNS → stub."""
+                        shm_size: str | None = None, env: dict[str, str] | None = None, *,
+                        output_dir: Path | None = None, read_only: bool = False,
+                        tmpfs: list[str] | None = None, no_logs: bool = False):
+        """Create (not start) the workload: internal network only, proxy env, CA, DNS → stub.
+
+        Sealed mode: `output_dir` on tmpfs, read-only root filesystem, `tmpfs` scratch paths, no logs."""
         i = self.info
         proxy_url = f"http://{i.proxy_ip}:{PROXY_PORT}"
         volumes = {str(self.run_dir / "ca" / "mitmproxy-ca-cert.pem"): {"bind": CA_IN_WORKLOAD, "mode": "ro"}}
         if output_target:
-            volumes[str(self.run_dir / "out")] = {"bind": output_target, "mode": "rw"}
+            volumes[str(output_dir or self.run_dir / "out")] = {"bind": output_target, "mode": "rw"}
         for host, target in (extra_ro_mounts or {}).items():
             volumes[str(Path(host).resolve())] = {"bind": target, "mode": "ro"}
         env = dict(env or {})                    # poi's proxy and CA settings always win
@@ -134,6 +158,12 @@ class Runtime:
             extra["device_requests"] = [docker.types.DeviceRequest(count=count, capabilities=[["gpu"]])]
         if shm_size:
             extra["shm_size"] = shm_size
+        if read_only:
+            extra["read_only"] = True
+        if tmpfs:
+            extra["tmpfs"] = {p: "" for p in tmpfs}
+        if no_logs:
+            extra["log_config"] = docker.types.LogConfig(type="none")
         w = self.client.containers.create(
             image, command=command, name=f"poi-{i.run_id}-workload", network=i.int_network,
             dns=[i.proxy_ip], environment=env, volumes=volumes, **extra)

@@ -58,3 +58,39 @@ def test_cli_run_passes_llm_options(monkeypatch, tmp_path):
     assert spec.env == {"HF_HUB_OFFLINE": "1", "A": "b=c"}
     assert spec.extra_ro_mounts == {"/models": "/hf"} and spec.command == ["python", "/app/job.py"]
     assert spec.run_dir == Path(tmp_path)
+
+
+def test_create_workload_sealed_options(tmp_path):
+    client = _Client()
+    rt = Runtime(client, tmp_path, RuntimeInfo("r1", "int", "ext", "10.231.0.2"))
+    out = tmp_path / "shm-out"
+    rt.create_workload("img", None, "/srv/out", {}, output_dir=out, read_only=True,
+                       tmpfs=["/tmp", "/cache"], no_logs=True)
+    kw = client.containers.kwargs
+    assert kw["read_only"] is True and kw["tmpfs"] == {"/tmp": "", "/cache": ""}
+    assert kw["log_config"]["Type"] == "none"
+    assert kw["volumes"][str(out)] == {"bind": "/srv/out", "mode": "rw"}
+    assert str(tmp_path / "out") not in kw["volumes"]
+
+
+def test_create_workload_default_is_not_sealed(tmp_path):
+    client = _Client()
+    Runtime(client, tmp_path, RuntimeInfo("r1", "int", "ext", "10.231.0.2")).create_workload("img", None, "/srv/out")
+    kw = client.containers.kwargs
+    assert not {"read_only", "tmpfs", "log_config"} & kw.keys()
+    assert kw["volumes"][str(tmp_path / "out")] == {"bind": "/srv/out", "mode": "rw"}
+
+
+def test_root_rm_runs_a_root_container(tmp_path):
+    from poi.runtime import PROXY_IMAGE, root_rm
+    seen = {}
+
+    class C:
+        class containers:
+            @staticmethod
+            def run(image, **kw):
+                seen.update(kw, image=image)
+    root_rm(C(), tmp_path)
+    assert seen["image"] == PROXY_IMAGE and seen["user"] == "0:0" and seen["remove"] is True
+    assert seen["network_mode"] == "none"
+    assert seen["volumes"] == {str(tmp_path): {"bind": "/w", "mode": "rw"}}
