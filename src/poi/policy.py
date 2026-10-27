@@ -50,6 +50,7 @@ class Policy:
     allow_gpu: bool = False
     image_attestation: str = "files"          # "files": hash every image file; "digest": trust the image ID
     attest_mounts: list[str] = field(default_factory=list)
+    require_sealed: bool = False
 
     @property
     def digest(self) -> str:
@@ -111,7 +112,8 @@ def parse(raw: bytes) -> Policy:
                   forward_headers=dict(d.get("forward_headers", {})),
                   allow_gpu=bool(d.get("allow_gpu", False)),
                   image_attestation=d.get("image_attestation", "files"),
-                  attest_mounts=list(d.get("attest_mounts", [])))
+                  attest_mounts=list(d.get("attest_mounts", [])),
+                  require_sealed=bool(d.get("require_sealed", False)))
 
 
 # --- channel capacity (spec §6.3) -------------------------------------------
@@ -204,4 +206,15 @@ def config_violations(doc: dict, policy: Policy) -> list[str]:
             v.append(f"attested mount must be read-only: {dest}")
         elif not m.get("content"):
             v.append(f"attested mount has no content digest: {dest}")
+    if policy.require_sealed:
+        s = doc.get("sealed")
+        if not isinstance(s, dict):
+            v.append("sealed mode required but the run is not sealed")
+        else:
+            if s.get("rootfs_ro") is not True:
+                v.append("sealed: root filesystem must be read-only")
+            if s.get("log_driver") != "none":
+                v.append("sealed: container logs must be disabled (log driver none)")
+            if s.get("swap") is not False:
+                v.append("sealed: swap was active during the run")
     return v

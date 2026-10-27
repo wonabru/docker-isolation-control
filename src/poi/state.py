@@ -196,6 +196,14 @@ def config_doc(inspect: dict, network_internal, mount_content: dict[str, str] | 
     }
 
 
+def sealed_section(inspect: dict, info: dict) -> dict:
+    """Sealed-mode facts: `info` from the run plus what Docker reports about the container (spec §7)."""
+    hc = inspect["HostConfig"]
+    return {**info, "rootfs_ro": bool(hc.get("ReadonlyRootfs")),
+            "log_driver": (hc.get("LogConfig") or {}).get("Type", ""),
+            "tmpfs": sorted((hc.get("Tmpfs") or {}).keys())}
+
+
 def config_bytes(doc: dict) -> bytes:
     return c.canonical_json(doc)
 
@@ -208,7 +216,8 @@ class _Cached:
 
 class StateTracker:
     def __init__(self, fs: ContainerFS, output: tuple[Path, str] | None = None,
-                 retries: int = 3, image_mode: str = "files", attest_mounts: tuple[str, ...] = ()) -> None:
+                 retries: int = 3, image_mode: str = "files", attest_mounts: tuple[str, ...] = (),
+                 sealer=None, sealed_info: dict | None = None) -> None:
         if image_mode not in ("files", "digest"):
             raise ValueError("image_mode must be files or digest")
         self.fs = fs
@@ -221,10 +230,13 @@ class StateTracker:
         self._cache: dict[str, _Cached] = {}
         self._mount_cache: dict = {}
         self.last_config: bytes = b""
+        self.sealer = sealer
+        self.sealed_info = sealed_info
 
     # -- helpers --------------------------------------------------------------
     def _excludes(self, inspect: dict) -> tuple[str, ...]:
-        return tuple(sorted(m["Destination"] for m in inspect.get("Mounts", [])))
+        tmpfs = (inspect.get("HostConfig") or {}).get("Tmpfs") or {}
+        return tuple(sorted({m["Destination"] for m in inspect.get("Mounts", [])} | set(tmpfs)))
 
     def _mount_content(self, inspect: dict) -> dict[str, str]:
         out = {}
@@ -235,7 +247,10 @@ class StateTracker:
         return out
 
     def _config(self, inspect: dict) -> tuple[str, bytes]:
-        raw = config_bytes(config_doc(inspect, self.fs.network_internal, self._mount_content(inspect)))
+        doc = config_doc(inspect, self.fs.network_internal, self._mount_content(inspect))
+        if self.sealed_info is not None:
+            doc["sealed"] = sealed_section(inspect, self.sealed_info)
+        raw = config_bytes(doc)
         self.last_config = raw
         return c.b2b256(raw), c.config_element(c.b2b256(raw))
 
@@ -302,7 +317,10 @@ class StateTracker:
                     if el is not None:
                         t[d["Path"]] = el
         if self.output is not None:
-            t.update(scan_host_dir(*self.output))
+            out = scan_host_dir(*self.output)
+            if self.sealer is not None:          # output file names and digests are client data
+                out = {k: self.sealer.seal_element(v) for k, v in out.items()}
+            t.update(out)
         _, cfg = self._config(inspect)
         t[CONFIG_KEY] = cfg
         return t
