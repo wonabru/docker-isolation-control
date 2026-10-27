@@ -55,3 +55,21 @@ def test_concurrent_writers_unique_seqs(tmp_path):
     for t in ts:
         t.join()
     assert sorted(e.seq for e in WalReader(tmp_path / "wal").read_new()) == list(range(1, 201))
+
+
+def test_sealed_writer_keeps_client_data_out_of_files(tmp_path):
+    from poi.seal.sealer import Sealer
+    s = Sealer(b"e" * 32)
+    w = WalWriter(tmp_path / "wal", tmp_path / "evidence", sealer=s)
+    seq = w.record_egress(T, "POST", "evil.test", "/c/85010112345", [("x-covert", "85010112345")],
+                          b'{"pesel":"85010112345"}', "block", "host-not-allowed")
+    w.record_dns(T, "85010112345.evil.test", "A", "block")
+    w.record_ingress(seq, 200, [], b"85010112345")
+    for p in [w.path, *(tmp_path / "evidence").iterdir()]:
+        assert b"85010112345" not in p.read_bytes()
+    entries = WalReader(tmp_path / "wal").read_new()
+    assert all(b"85010112345" not in e.element for e in entries)
+    f = s.open_fields(c.decode(entries[0].element))
+    assert (f[4], f[5]) == ("evil.test", "/c/85010112345")
+    assert s.open_evidence(evidence.get(tmp_path / "evidence", f[7])) == b'{"pesel":"85010112345"}'
+    assert s.open_fields(c.decode(entries[1].element))[3] == "85010112345.evil.test"

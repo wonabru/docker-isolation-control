@@ -13,7 +13,8 @@ from pathlib import Path
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 
-PROXY_IMAGE = "poi-proxy:0.1"
+PROXY_IMAGE = "poi-proxy:0.2"
+SECRETS_IN_PROXY = "/run/poi-secrets"     # must match POI_SECRETS in proxy_addon.py
 PROXY_PORT = 8080
 CA_IN_WORKLOAD = "/etc/poi/ca.pem"
 REPO_ROOT = Path(__file__).resolve().parents[2]   # src layout: <repo>/src/poi/runtime.py

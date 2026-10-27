@@ -13,6 +13,7 @@ from poi.gate import EgressGate
 from poi.wal import WalWriter
 
 RUN = Path(os.environ.get("POI_RUN", "/run/poi"))
+SECRETS = Path(os.environ.get("POI_SECRETS", "/run/poi-secrets"))   # sealed mode: tmpfs, read-only
 
 
 def _blocked(reason: str) -> http.Response:
@@ -22,10 +23,15 @@ def _blocked(reason: str) -> http.Response:
 class PoiAddon:
     def __init__(self) -> None:
         self.policy = pol.load(RUN / "policy.yaml")
-        self.wal = WalWriter(RUN / "proxy-wal", RUN / "evidence")
+        sealer = None
+        if (SECRETS / "ek").exists():
+            from poi.seal.sealer import Sealer
+            sealer = Sealer((SECRETS / "ek").read_bytes())
+        self.wal = WalWriter(RUN / "proxy-wal", RUN / "evidence", sealer)
         fp = None
         if (RUN / "fingerprints.bin").exists():
-            fp = FingerprintSet.load(RUN / "fingerprints.bin", (RUN / "fingerprint.key").read_bytes(),
+            kp = SECRETS / "fingerprint.key" if (SECRETS / "fingerprint.key").exists() else RUN / "fingerprint.key"
+            fp = FingerprintSet.load(RUN / "fingerprints.bin", kp.read_bytes(),
                                      self.policy.fingerprint_k, self.policy.fingerprint_w)
         self.gate = EgressGate(self.policy, self.wal, fp)
         self.dns = start_dns(self.wal, self.policy.hosts, os.environ["POI_PROXY_IP"])
