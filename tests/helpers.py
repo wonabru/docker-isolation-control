@@ -228,3 +228,4 @@ def http_call(url, method="GET", headers=None):
             return r.status, r.headers, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers, e.read()
+FAST_KDF = {"m_kib": 1024, "t": 1, "p": 1}       # Argon2id parameters that keep tests fast
