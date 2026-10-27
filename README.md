@@ -56,6 +56,45 @@ The dashboard verifies every checkpoint locally (codes 10–16), keeps a verifie
 **Proof broken**. Container state (status, CPU, RAM) is the operator's claim — it is displayed but
 never affects the verdict. To preview a local run, `--source ./run` is enough.
 
+## Sealed mode — data unreadable after the audit
+
+With `--sealed` the client's data exists in plaintext only in RAM (tmpfs) during the run. Everything left
+on the host afterwards — run directory, container, logs, backups — holds ciphertext that only the
+client's password-protected key opens. Key exchange is hybrid post-quantum (X25519 + ML-KEM-768).
+During the run the host is still trusted (spec §2 of `2026-10-27-poi-sealed-mode-design.md`).
+
+Data owner, once:
+
+```bash
+poi client-keygen client.key                                   # asks for a password; writes client.pub
+poi fingerprint --data moje_dane --fp-key fp.key --out fp.bin
+poi seal --data moje_dane --to client.pub --out moje_dane.sealed
+```
+
+Send `client.pub`, `fp.bin` and `moje_dane.sealed` to the operator. The operator starts the run; it
+writes `run/run.pub` and waits for the grant:
+
+```bash
+poi run --sealed --client-pub client.pub --sealed-mount moje_dane.sealed:/data \
+        --policy examples/quickstart/policy.yaml --key signing.key --run-dir run \
+        --fingerprints fp.bin --mount ./examples/quickstart/job.py:/app/job.py \
+        python:3.12-slim python /app/job.py
+```
+
+The data owner turns `run.pub` into a grant (valid for this run only) and sends it back;
+the operator puts it at `run/grant.bin`:
+
+```bash
+poi grant moje_dane.sealed --run-pub run.pub --key client.key --fp-key fp.key --out grant.bin
+```
+
+Afterwards anyone can check the chain (`poi verify run`); only the data owner can read content:
+`poi verify run --client-key client.key`, `poi report run --client-key client.key`,
+`poi dashboard ... --client-key client.key`, `poi unseal run/out.sealed --key client.key --out result`.
+`POI_CLIENT_PASSWORD` supplies the password non-interactively. A policy with `require_sealed: true`
+makes any run without sealed mode (or with swap active) fail verification. The run refuses to start
+while swap is active unless `--allow-swap` is given; `poi clean run` wipes tmpfs leftovers of a crashed run.
+
 ## Case: LLM in a container (vLLM + Qwen3-0.6B, GPU)
 
 `examples/llm/` runs an agent on a local model that summarizes `moje_dane/pacjenci.csv`.
