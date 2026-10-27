@@ -1,4 +1,4 @@
-"""Independent verifier. Must import only: lthash, canonical, evidence, policy (+ cryptography).
+"""Independent verifier. Must import only: lthash, canonical, evidence, policy, seal (+ cryptography).
 
 Replays the checkpoint chain from genesis and checks every claim a checkpoint makes.
 """
@@ -18,6 +18,7 @@ from poi import canonical as c
 from poi import evidence
 from poi.lthash import LtHash
 from poi.policy import Policy, config_violations
+from poi.seal import FIELD_PREFIX, SealError
 
 E_SIGNATURE = 10
 E_CHAIN = 11
@@ -27,6 +28,7 @@ E_SCHEMA = 14
 E_CONFIG = 15
 E_EVIDENCE = 16
 E_LIVE = 17
+E_SEALED = 18
 
 ACCS = ("state", "egress", "ingress")
 
@@ -62,6 +64,7 @@ class VerifyResult:
     egress: list[Event] = field(default_factory=list)
     ingress: list[Event] = field(default_factory=list)
     config_digests: list[tuple[int, str]] = field(default_factory=list)
+    sealed_unchecked: int = 0
 
     @property
     def last(self) -> dict:
@@ -132,18 +135,43 @@ def _check_config(seq: int, digest: str, get: GetEvidence, policy: Policy) -> No
         raise VerifyError(E_CONFIG, seq, "; ".join(v))
 
 
-def _check_egress(ev: Event, get: GetEvidence, policy: Policy) -> None:
+def _opened(get: GetEvidence, sealer, seq: int) -> GetEvidence:
+    def g(digest: str) -> bytes | None:
+        data = get(digest)
+        if data is None:
+            return None
+        try:
+            return sealer.open_evidence(data)
+        except SealError as e:
+            raise VerifyError(E_SEALED, seq, f"evidence {digest[:12]}…: {e}")
+    return g
+
+
+def _check_egress(ev: Event, get: GetEvidence, policy: Policy, sealer=None) -> bool:
+    """Check one egress/dns event. Returns False when it is sealed and no client key was given:
+    then only evidence integrity (16) is checked, not schema conformance (14)."""
     f = ev.fields
+    if sealer is not None:
+        try:
+            f = sealer.open_fields(f)
+        except SealError as e:
+            raise VerifyError(E_SEALED, ev.checkpoint, f"{ev.domain} seq {ev.seq}: {e}")
+        get = _opened(get, sealer, ev.checkpoint)
+    elif any(x.startswith(FIELD_PREFIX) for x in f):
+        if ev.domain == "egress":
+            _evidence(get, f[6], ev.checkpoint, f"egress {ev.seq} headers")
+            _evidence(get, f[7], ev.checkpoint, f"egress {ev.seq} body")
+        return False
     if ev.domain == "dns":
         _, _, _, name, qtype, verdict = f
         if verdict == "allow" and (name not in policy.hosts or qtype != "A"):
             raise VerifyError(E_SCHEMA, ev.checkpoint, f"dns seq {ev.seq}: {name} answered but not allowed")
-        return
+        return True
     _, _, _, method, host, path, hdig, bdig, verdict, _ = f
     headers = _evidence(get, hdig, ev.checkpoint, f"egress {ev.seq} headers")
     body = _evidence(get, bdig, ev.checkpoint, f"egress {ev.seq} body")
     if verdict != "allow":
-        return
+        return True
     d = policy.decide(host, method, path, body)
     if d.verdict != "allow" or d.body != body:
         raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} does not satisfy policy ({d.reason})")
@@ -151,6 +179,7 @@ def _check_egress(ev: Event, get: GetEvidence, policy: Policy) -> None:
     fwd += [[k, v] for k, v in sorted(policy.forward_headers.items())]
     if json.loads(headers) != sorted(fwd):
         raise VerifyError(E_SCHEMA, ev.checkpoint, f"egress seq {ev.seq} forwarded unexpected headers")
+    return True
 
 
 def _check_ingress(ev: Event, get: GetEvidence) -> None:
@@ -164,9 +193,10 @@ class ChainVerifier:
     Without a policy it checks 10–13 (chain); with a policy also 14–16 for each checkpoint.
     """
 
-    def __init__(self, pubkey_hex: str, policy: Policy | None = None) -> None:
+    def __init__(self, pubkey_hex: str, policy: Policy | None = None, sealer=None) -> None:
         self.pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
         self.policy = policy
+        self.sealer = sealer
         self.res = VerifyResult(accs={a: LtHash() for a in ACCS})
         self._allowed: set[int] = set()
         self._seen_ingress: set[int] = set()
@@ -245,6 +275,7 @@ class ChainVerifier:
         if cp["egress"]["count"] != n_egress or cp["ingress"]["count"] != n_ingress:
             raise VerifyError(E_SEQ, seq, "count does not match number of events")
 
+        unchecked = 0
         if self.policy is not None:
             get = get_evidence or (lambda d: None)
             _check_binding(cp, self.policy)
@@ -253,10 +284,11 @@ class ChainVerifier:
             for ev in new_events:
                 if ev.domain == "ingress":
                     _check_ingress(ev, get)
-                else:
-                    _check_egress(ev, get, self.policy)
+                elif not _check_egress(ev, get, self.policy, self.sealer):
+                    unchecked += 1
 
         res.accs, res.state_elements = accs, state
+        res.sealed_unchecked += unchecked
         res.config_digests += new_configs
         for ev in new_events:
             (res.ingress if ev.domain == "ingress" else res.egress).append(ev)
@@ -277,7 +309,7 @@ def verify_chain(run_dir: Path, pubkey_hex: str) -> VerifyResult:
     return v.res
 
 
-def verify_policy(res: VerifyResult, run_dir: Path, policy: Policy) -> None:
+def verify_policy(res: VerifyResult, run_dir: Path, policy: Policy, sealer=None) -> None:
     """Checks policy binding and configuration (15), evidence (16) and schema conformance (14)."""
     edir = Path(run_dir) / "evidence"
 
@@ -288,16 +320,18 @@ def verify_policy(res: VerifyResult, run_dir: Path, policy: Policy) -> None:
         _check_binding(cp, policy)
     for seq, digest in res.config_digests:
         _check_config(seq, digest, get, policy)
+    res.sealed_unchecked = 0
     for ev in res.egress:
-        _check_egress(ev, get, policy)
+        if not _check_egress(ev, get, policy, sealer):
+            res.sealed_unchecked += 1
     for ev in res.ingress:
         _check_ingress(ev, get)
 
 
-def verify_run(run_dir: Path, pubkey_hex: str, policy: Policy) -> ChainVerifier:
+def verify_run(run_dir: Path, pubkey_hex: str, policy: Policy, sealer=None) -> ChainVerifier:
     """Incremental equivalent of verify_chain + verify_policy over a run directory."""
     run_dir = Path(run_dir)
-    v = ChainVerifier(pubkey_hex, policy)
+    v = ChainVerifier(pubkey_hex, policy, sealer)
     for cp in _load_checkpoints(run_dir):
         v.feed(cp, _read_delta(run_dir, cp), lambda d: evidence.get(run_dir / "evidence", d))
     return v

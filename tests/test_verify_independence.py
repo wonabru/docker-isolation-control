@@ -3,7 +3,7 @@ from pathlib import Path
 
 import poi.verify
 
-ALLOWED = {"poi", "poi.canonical", "poi.lthash", "poi.evidence", "poi.policy"}
+ALLOWED = {"poi", "poi.canonical", "poi.lthash", "poi.evidence", "poi.policy", "poi.seal"}
 
 
 def test_verifier_imports_only_allowed_modules():
