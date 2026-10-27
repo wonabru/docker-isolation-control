@@ -17,6 +17,7 @@ from poi import evidence
 from poi import policy as pol
 from poi.assess import Snapshot, Verdict, assess
 from poi.fingerprint import FingerprintSet
+from poi.seal.sealer import EV_MAGIC, display_fields, is_sealed
 from poi.source import NotFound, Source, SourceError
 from poi.verify import ChainVerifier, Event, VerifyError, parse_delta
 
@@ -49,7 +50,8 @@ def evidence_digests(ops: list[tuple[str, str, bytes]]) -> list[str]:
 class Mirror:
     def __init__(self, mirror_dir: Path, source: Source, pubkey_hex: str,
                  fingerprints: FingerprintSet | None = None, source_label: str = "",
-                 monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> None:
+                 monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+                 sealer=None) -> None:
         self.dir = Path(mirror_dir)
         self.source = source
         self.pubkey_hex = pubkey_hex
@@ -74,8 +76,10 @@ class Mirror:
         self.hits: dict[int, tuple[str, list[str]]] = {}     # egress seq -> (verdict, sources)
         self.acks: set[int] = set(json.loads((self.dir / "acks.json").read_text())) \
             if (self.dir / "acks.json").exists() else set()
+        self.sealer = sealer
         self.policy = self._load_policy()
-        self.verifier = ChainVerifier(pubkey_hex, self.policy)
+        self._copy_sealed_doc()
+        self.verifier = ChainVerifier(pubkey_hex, self.policy, sealer)
         self.replay_local()
 
     # -- setup -------------------------------------------------------------------
@@ -84,6 +88,28 @@ class Mirror:
         if not p.exists():
             _write_atomic(p, self.source.policy())
         return pol.load(p)
+
+    def _copy_sealed_doc(self) -> None:
+        """Keep sealed.json next to the mirrored run so `poi verify MIRROR --client-key` works."""
+        p = self.dir / "sealed.json"
+        if p.exists():
+            return
+        try:
+            _write_atomic(p, self.source.sealed())
+        except SourceError:
+            pass                                    # not a sealed run
+
+    def fields(self, f: list[str]) -> list[str]:
+        """Element fields for display: decrypted with the client key, 🔒 without it."""
+        return self.sealer.open_fields(f) if self.sealer is not None else display_fields(f)
+
+    def evidence(self, digest: str) -> bytes | None:
+        data = self._get_local(digest)
+        if data is None:
+            return None
+        if self.sealer is not None:
+            return self.sealer.open_evidence(data)
+        return None if data.startswith(EV_MAGIC) else data
 
     def _get_local(self, digest: str) -> bytes | None:
         return evidence.get(self.dir / "evidence", digest)
@@ -94,10 +120,13 @@ class Mirror:
         for ev in events:
             if ev.domain != "egress":
                 continue
-            body = self._get_local(ev.fields[7]) or b""
-            found = self.fingerprints.scan(body + b" " + ev.fields[5].encode())
+            if self.sealer is None and any(is_sealed(x) for x in ev.fields):
+                continue                            # nothing to scan without the client key
+            f = self.fields(ev.fields)
+            body = self.evidence(f[7]) or b""
+            found = self.fingerprints.scan(body + b" " + f[5].encode())
             if found:
-                self.hits[ev.seq] = (ev.fields[8], sorted(found))
+                self.hits[ev.seq] = (f[8], sorted(found))
 
     def replay_local(self) -> None:
         """Re-verify everything already in the mirror (restart, or local tampering)."""

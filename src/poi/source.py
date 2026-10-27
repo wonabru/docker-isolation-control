@@ -26,6 +26,7 @@ class Source(Protocol):
     def delta(self, seq: int) -> bytes: ...
     def evidence(self, digest: str) -> bytes: ...
     def policy(self) -> bytes: ...
+    def sealed(self) -> bytes: ...
     def runtime(self) -> dict: ...
 
 
@@ -61,6 +62,9 @@ class LocalSource:
 
     def policy(self) -> bytes:
         return self._read(self.run_dir / "policy.yaml")
+
+    def sealed(self) -> bytes:
+        return self._read(self.run_dir / "sealed.json")
 
     def runtime(self) -> dict:
         if self._runtime is not None:
@@ -112,6 +116,9 @@ class HttpSource:
 
     def policy(self) -> bytes:
         return self._get("/v1/policy")
+
+    def sealed(self) -> bytes:
+        return self._get("/v1/sealed")
 
     def runtime(self) -> dict:
         try:

@@ -44,10 +44,10 @@ class DashboardApp:
 
     # -- helpers --------------------------------------------------------------------
     def _evidence(self, digest: str) -> bytes | None:
-        return self.m._get_local(digest)
+        return self.m.evidence(digest)
 
     def _event_row(self, ev) -> dict:
-        f = ev.fields
+        f = self.m.fields(ev.fields)
         hit = self.m.hits.get(ev.seq)
         if ev.domain == "dns":
             row = {"seq": ev.seq, "kind": "dns", "t": f[2], "target": f[3], "qtype": f[4],
@@ -69,7 +69,7 @@ class DashboardApp:
         for op, acc, element in parse_delta(cp, raw):
             f = c.decode(element)
             if f[0] == "file":
-                (adds if op == "add" else subs)[f[1]] = element
+                (adds if op == "add" else subs)[f[1]] = self.m.fields(f)[1]
             elif f[0] == "config" and op == "add":
                 config = f[1]
             elif f[0] in ("egress", "dns"):
@@ -77,7 +77,7 @@ class DashboardApp:
                 blocked += (f[8] if f[0] == "egress" else f[5]) != "allow"
         for p in sorted(adds.keys() | subs.keys()):
             key = "changed" if p in adds and p in subs else ("added" if p in adds else "removed")
-            files[key].append(p)
+            files[key].append(adds.get(p) or subs.get(p))
         stats = {"seq": seq, "t": cp["t"], "files": files, "config": config, "egress": egress,
                  "blocked": blocked, "restart": cp.get("restart", False)}
         self._cp_cache[seq] = stats
@@ -92,7 +92,7 @@ class DashboardApp:
             allowed = Counter()
             blocked = dns = 0
             for ev in res.egress:
-                f = ev.fields
+                f = m.fields(ev.fields)
                 if ev.domain == "dns":
                     dns += 1
                     blocked += f[5] != "allow"
@@ -164,7 +164,7 @@ class DashboardApp:
                             "egress_accumulator": cp["egress"]["digest"], "signature": "verified",
                             "element": c.encode(*ev.fields).decode("utf-8").replace("\0", " │ ")}
             if ev.domain == "egress":
-                f = ev.fields
+                f = self.m.fields(ev.fields)
                 hdr = self._evidence(f[6])
                 body = self._evidence(f[7])
                 row["headers"] = json.loads(hdr) if hdr else None

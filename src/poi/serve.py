@@ -114,6 +114,8 @@ def make_server(run_dir: Path, token: str, host: str = "127.0.0.1", port: int = 
                 return self._file(run_dir / "evidence" / f"{arg}.bin")
             if kind == "policy" and arg is None:
                 return self._file(run_dir / "policy.yaml", "application/yaml")
+            if kind == "sealed" and arg is None:
+                return self._file(run_dir / "sealed.json", "application/json")
             if kind == "runtime" and arg is None:
                 return self._send(200, json.dumps(rt.get()).encode(), "application/json")
             return self._send(404, b"not found\n", "text/plain")

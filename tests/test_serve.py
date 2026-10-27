@@ -111,3 +111,25 @@ def test_declaration_from_docker():
     assert d == {"status": "running", "started_at": "2026-10-13T18:00:00Z", "cpu_percent": 40.0,
                  "mem_bytes": 4096, "observed_at": "T"}
     assert _cpu_percent({}) == 0.0
+
+
+def _get(base, path):
+    req = urllib.request.Request(base + path, headers={"authorization": f"Bearer {TOKEN}"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_sealed_doc_route_and_sources(served):
+    from poi.source import HttpSource, LocalSource, NotFound
+    base, _, run = served
+    assert _get(base, "/v1/sealed")[0] == 404
+    with pytest.raises(NotFound):
+        LocalSource(run).sealed()
+    with pytest.raises(NotFound):
+        HttpSource(base, TOKEN).sealed()
+    (run / "sealed.json").write_bytes(b'{"v":1}')
+    assert _get(base, "/v1/sealed") == (200, b'{"v":1}')
+    assert LocalSource(run).sealed() == HttpSource(base, TOKEN).sealed() == b'{"v":1}'

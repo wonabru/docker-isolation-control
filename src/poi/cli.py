@@ -268,12 +268,22 @@ def build_dashboard(args):
         source = LocalSource(Path(args.source))
     source.policy()                                   # fail fast on a wrong URL or token
     pubkey = args.pubkey or Path(args.pubkey_file).read_text().strip()
+    sealer = None
+    if getattr(args, "client_key", None):
+        from poi.source import NotFound
+        try:
+            sealed_raw = source.sealed()
+        except NotFound:
+            raise SystemExit("not a sealed run: the operator feed has no sealed.json")
+        sealer, rc = _client_sealer(args, sealed_raw)
+        if rc:
+            raise SystemExit(rc)
     fps = None
     if args.data:
         policy_raw = source.policy()
         p = pol.parse(policy_raw)
         fps = FingerprintSet.from_dir(Path(args.data), Path(args.fp_key).read_bytes(), p.fingerprint_k, p.fingerprint_w)
-    mirror = Mirror(Path(args.mirror), source, pubkey, fps, source_label=args.source)
+    mirror = Mirror(Path(args.mirror), source, pubkey, fps, source_label=args.source, sealer=sealer)
     key = new_session_key()
     host, port = _hostport(args.listen)
     srv = make_dashboard_server(DashboardApp(mirror, args.source), key, host, port)
