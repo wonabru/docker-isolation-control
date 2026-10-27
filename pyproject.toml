@@ -9,7 +9,7 @@ description = "Proof of Isolation: homomorphic-hash attestation that data does n
 requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.26",
-  "cryptography>=42",
+  "cryptography>=50",
   "jsonschema>=4.21",
   "pyyaml>=6",
   "docker>=7",
