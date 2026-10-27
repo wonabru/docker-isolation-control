@@ -104,3 +104,43 @@ def test_resume_refuses_sealed_run(tmp_path):
     (tmp_path / "sealed.json").write_text("{}")
     with pytest.raises(SealError, match="cannot be resumed"):
         daemon.resume(tmp_path, tmp_path / "k", client=object())
+
+
+def test_tmpfs_is_wiped_even_when_teardown_fails(tmp_path, monkeypatch):
+    from poi.ledger import generate_key
+    from helpers import POLICY
+    wiped = []
+
+    class Session:
+        run_id, secrets, out, ro_mounts = "r1", tmp_path, tmp_path, {}
+
+        def __init__(self, run_dir, opts):
+            pass
+
+        def setup(self, want_fingerprint_key):
+            pass
+
+        def wipe(self, root_rm=None):
+            wiped.append(True)
+
+    class RT:
+        def __init__(self, client, run_dir):
+            self.info = None
+
+        def prepare(self, *a, **kw):
+            self.info = object()
+            raise RuntimeError("proxy failed")
+
+        def teardown(self, keep_workload):
+            raise RuntimeError("network has active endpoints")
+
+    monkeypatch.setattr(daemon, "SealedSession", Session)
+    monkeypatch.setattr(daemon, "Runtime", RT)
+    monkeypatch.setattr(daemon, "ensure_proxy_image", lambda client: None)
+    (tmp_path / "p.yaml").write_bytes(POLICY)
+    generate_key(tmp_path / "k")
+    spec = daemon.RunSpec(tmp_path / "run", tmp_path / "p.yaml", tmp_path / "k", "img",
+                          sealed=SealedOptions(b"", {}))
+    with pytest.raises(RuntimeError):
+        daemon.start(spec, client=object())
+    assert wiped == [True]

@@ -105,9 +105,11 @@ def _start_sealed(spec: RunSpec, client, policy: pol.Policy) -> Runtime:
         loop(engine, rt, policy.tick_seconds, spec.max_ticks)
         s.finish()
     finally:
-        if rt.info is not None:
-            rt.teardown(keep_workload=False)
-        s.wipe(root_rm=lambda p: root_rm(client, p))
+        try:
+            if rt.info is not None:
+                rt.teardown(keep_workload=False)
+        finally:                              # decrypted data must go even if Docker cleanup fails
+            s.wipe(root_rm=lambda p: root_rm(client, p))
     return rt
 
 
