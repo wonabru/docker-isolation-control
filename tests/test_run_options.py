@@ -94,3 +94,38 @@ def test_root_rm_runs_a_root_container(tmp_path):
     assert seen["image"] == PROXY_IMAGE and seen["user"] == "0:0" and seen["remove"] is True
     assert seen["network_mode"] == "none"
     assert seen["volumes"] == {str(tmp_path): {"bind": "/w", "mode": "rw"}}
+
+
+def test_create_workload_gpu_runtime_nvidia(tmp_path):
+    """CDI-mode hosts refuse --gpus: the nvidia runtime + NVIDIA_VISIBLE_DEVICES attaches the GPUs instead."""
+    client = _Client()
+    rt = Runtime(client, tmp_path, RuntimeInfo("r1", "int", "ext", "10.231.0.2"))
+    rt.create_workload("img", None, None, gpus="all", env={"NVIDIA_VISIBLE_DEVICES": "void"}, gpu_runtime="nvidia")
+    kw = client.containers.kwargs
+    assert kw["runtime"] == "nvidia" and "device_requests" not in kw
+    assert kw["environment"]["NVIDIA_VISIBLE_DEVICES"] == "all"            # poi's choice wins over the caller's env
+    assert kw["environment"]["NVIDIA_DRIVER_CAPABILITIES"] == "compute,utility"
+    rt.create_workload("img", None, None, gpus="2", gpu_runtime="nvidia")
+    assert client.containers.kwargs["environment"]["NVIDIA_VISIBLE_DEVICES"] == "0,1"
+    rt.create_workload("img", None, None, gpus="1,3", gpu_runtime="nvidia")
+    assert client.containers.kwargs["environment"]["NVIDIA_VISIBLE_DEVICES"] == "1,3"
+
+
+def test_create_workload_gpu_device_ids(tmp_path):
+    client = _Client()
+    Runtime(client, tmp_path, RuntimeInfo("r1", "int", "ext", "10.231.0.2")).create_workload("img", None, None, gpus="0,2")
+    req = client.containers.kwargs["device_requests"][0]
+    assert (req["DeviceIDs"], req["Capabilities"]) == (["0", "2"], [["gpu"]])
+
+
+def test_cli_run_passes_gpu_runtime(monkeypatch, tmp_path):
+    seen = {}
+
+    class RT:
+        def teardown(self, keep_workload):
+            pass
+
+    monkeypatch.setattr(daemon, "start", lambda spec: seen.setdefault("spec", spec) and RT() or RT())
+    assert cli.main(["run", "--policy", "p.yaml", "--key", "k", "--run-dir", str(tmp_path),
+                     "--gpus", "all", "--gpu-runtime", "nvidia", "img"]) == 0
+    assert (seen["spec"].gpus, seen["spec"].gpu_runtime) == ("all", "nvidia")
