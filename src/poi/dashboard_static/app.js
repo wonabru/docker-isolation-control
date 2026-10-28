@@ -75,9 +75,9 @@ function renderSummary(sum) {
   $("verdict-lede").textContent = lede;
   $("reasons").replaceChildren(...sum.verdict.reasons.map((r) => el("li", {}, r)));
   const last = sum.last_checkpoint;
-  $("last").textContent = last
-    ? `Last signed checkpoint #${last.seq} · received ${age(last.age_s)} · operator clock ${last.t}`
-    : "No checkpoint received yet.";
+  $("last").textContent = !last ? "No checkpoint received yet."
+    : sum.finished ? `Run finished · final signed checkpoint #${last.seq} · operator clock ${last.t}`
+    : `Last signed checkpoint #${last.seq} · received ${age(last.age_s)} · operator clock ${last.t}`;
   drawSeal(level, sum);
   if (state.level !== null && state.level !== level) {
     $("seal").classList.remove("stamp"); void $("seal").getBBox(); $("seal").classList.add("stamp");

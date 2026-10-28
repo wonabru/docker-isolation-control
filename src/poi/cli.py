@@ -1,5 +1,5 @@
-"""Command line: poi keygen | fingerprint | run | resume | verify | report | clean | serve | dashboard
-| client-keygen | seal | grant | unseal."""
+"""Command line: poi keygen | fingerprint | run | resume | finalize | verify | report | clean | serve
+| dashboard | client-keygen | seal | grant | unseal."""
 from __future__ import annotations
 
 import argparse
@@ -88,6 +88,46 @@ def cmd_unseal(args) -> int:
         print(f"sealed: {e}", file=sys.stderr)
         return 2
     print(f"{args.bundle} → {args.out}")
+    return 0
+
+
+def cmd_finalize(args) -> int:
+    """Sign the end of a run that stopped without a final checkpoint (runs from before `final`, or a
+    daemon that died after the workload exited): one checkpoint with no changes, marked final."""
+    from poi.gate import utcnow
+    from poi.ledger import Ledger, load_key
+    from poi.lthash import LtHash
+    from poi.publish import LocalPublisher
+    from poi.runtime import RuntimeInfo
+    run = Path(args.run_dir)
+    ledger = Ledger(run, load_key(Path(args.key)))
+    last = ledger.last()
+    if last is None:
+        print("no checkpoints to finalize", file=sys.stderr)
+        return 2
+    if last.get("final"):
+        print(f"already final at checkpoint {last['seq']}")
+        return 0
+    if not args.force:
+        try:
+            import docker
+            from docker.errors import NotFound
+            try:
+                status = docker.from_env().containers.get(RuntimeInfo.load(run).workload_id).status
+            except NotFound:
+                status = "removed"
+            if status not in ("exited", "dead", "removed"):
+                print(f"workload is {status}: finalize only a finished run (--force to override)", file=sys.stderr)
+                return 2
+        except Exception as e:                          # no Docker / no runtime.json: the operator decides
+            print(f"cannot check the workload ({type(e).__name__}); use --force if it has finished", file=sys.stderr)
+            return 2
+    cp = ledger.append(t=max(utcnow(), last["t"]), container=last["container"], policy_digest=last["policy"],
+                       accs={a: LtHash.from_b64(last[a]["vec"]) for a in ("state", "egress", "ingress")},
+                       counts={"egress": last["egress"]["count"], "ingress": last["ingress"]["count"]},
+                       ops=[], final=True)
+    LocalPublisher(run).publish(cp)
+    print(f"final checkpoint {cp['seq']} signed")
     return 0
 
 
@@ -317,6 +357,12 @@ def cmd_dashboard(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="poi", description="Proof of Isolation")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("finalize", help="operator: sign the end of a run that has no final checkpoint")
+    s.add_argument("run_dir")
+    s.add_argument("--key", required=True)
+    s.add_argument("--force", action="store_true", help="skip the check that the workload has exited")
+    s.set_defaults(fn=cmd_finalize)
 
     s = sub.add_parser("keygen", help="generate an Ed25519 signing key")
     s.add_argument("key")
