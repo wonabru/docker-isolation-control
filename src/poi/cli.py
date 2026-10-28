@@ -133,7 +133,7 @@ def cmd_run(args) -> int:
     env = dict(e.split("=", 1) for e in args.env)
     spec = daemon.RunSpec(Path(args.run_dir), Path(args.policy), Path(args.key), args.image,
                           args.cmd or None, fps, mounts, gpus=args.gpus, shm_size=args.shm_size, env=env,
-                          sealed=sealed)
+                          sealed=sealed, gpu_runtime=args.gpu_runtime)
     try:
         rt = daemon.start(spec)
     except SealError as e:
@@ -362,7 +362,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fp-key")
     s.add_argument("--mount", action="append", default=[], help="HOST:TARGET read-only mount")
     s.add_argument("--rm", action="store_true", help="remove the workload container at the end")
-    s.add_argument("--gpus", help="'all' or a number of GPUs to attach (policy must set allow_gpu)")
+    s.add_argument("--gpus", help="'all', a number of GPUs or device ids '0,1' (policy must set allow_gpu)")
+    s.add_argument("--gpu-runtime", help="attach GPUs through this runtime (e.g. nvidia) instead of --gpus "
+                                         "device requests; needed when the NVIDIA toolkit runs in CDI mode")
     s.add_argument("--shm-size", help="size of /dev/shm, e.g. 1g")
     s.add_argument("--env", action="append", default=[], help="KEY=VALUE for the workload")
     s.add_argument("--sealed", action="store_true", help="client data only in tmpfs; evidence sealed to the client")

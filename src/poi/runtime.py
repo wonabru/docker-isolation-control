@@ -57,6 +57,13 @@ def root_rm(client: docker.DockerClient, path: Path, image: str = PROXY_IMAGE) -
                           volumes={str(path): {"bind": "/w", "mode": "rw"}})
 
 
+def visible_devices(gpus: str) -> str:
+    """NVIDIA_VISIBLE_DEVICES for `gpus`: "all", device ids "0,1" as given, a count N → "0,…,N-1"."""
+    if gpus == "all" or "," in gpus:
+        return gpus
+    return ",".join(str(i) for i in range(int(gpus)))
+
+
 class Runtime:
     def __init__(self, client: docker.DockerClient, run_dir: Path, info: RuntimeInfo | None = None) -> None:
         self.client = client
@@ -137,10 +144,13 @@ class Runtime:
                         extra_ro_mounts: dict[str, str] | None = None, gpus: str | None = None,
                         shm_size: str | None = None, env: dict[str, str] | None = None, *,
                         output_dir: Path | None = None, read_only: bool = False,
-                        tmpfs: list[str] | None = None, no_logs: bool = False):
+                        tmpfs: list[str] | None = None, no_logs: bool = False, gpu_runtime: str | None = None):
         """Create (not start) the workload: internal network only, proxy env, CA, DNS → stub.
 
-        Sealed mode: `output_dir` on tmpfs, read-only root filesystem, `tmpfs` scratch paths, no logs."""
+        Sealed mode: `output_dir` on tmpfs, read-only root filesystem, `tmpfs` scratch paths, no logs.
+        GPUs: `gpus` is "all", a count or device ids ("0,1"); by default a device request (`docker --gpus`),
+        with `gpu_runtime` (e.g. "nvidia") that runtime + NVIDIA_VISIBLE_DEVICES — for hosts whose NVIDIA
+        Container Toolkit runs in CDI mode, where `--gpus` is refused."""
         i = self.info
         proxy_url = f"http://{i.proxy_ip}:{PROXY_PORT}"
         volumes = {str(self.run_dir / "ca" / "mitmproxy-ca-cert.pem"): {"bind": CA_IN_WORKLOAD, "mode": "ro"}}
@@ -153,9 +163,16 @@ class Runtime:
         env.update({k: CA_IN_WORKLOAD for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
                                                  "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")})
         extra = {}
-        if gpus:
-            count = -1 if gpus == "all" else int(gpus)
-            extra["device_requests"] = [docker.types.DeviceRequest(count=count, capabilities=[["gpu"]])]
+        if gpus and gpu_runtime:
+            extra["runtime"] = gpu_runtime
+            env["NVIDIA_VISIBLE_DEVICES"] = visible_devices(gpus)
+            env.setdefault("NVIDIA_DRIVER_CAPABILITIES", "compute,utility")
+        elif gpus:
+            if "," in gpus:
+                req = docker.types.DeviceRequest(device_ids=gpus.split(","), capabilities=[["gpu"]])
+            else:
+                req = docker.types.DeviceRequest(count=-1 if gpus == "all" else int(gpus), capabilities=[["gpu"]])
+            extra["device_requests"] = [req]
         if shm_size:
             extra["shm_size"] = shm_size
         if read_only:

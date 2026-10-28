@@ -35,6 +35,7 @@ class RunSpec:
     shm_size: str | None = None
     env: dict[str, str] | None = None
     sealed: SealedOptions | None = None
+    gpu_runtime: str | None = None                 # e.g. "nvidia": GPUs via that runtime instead of --gpus
 
 
 def _engine(client, rt: Runtime, policy: pol.Policy, key_path: Path, output_dir: Path | None = None,
@@ -79,7 +80,7 @@ def start(spec: RunSpec, client=None) -> Runtime:
     rt = Runtime(client, spec.run_dir)
     rt.prepare(spec.policy_path, spec.fingerprints, policy.upstream_insecure)
     rt.create_workload(spec.image, spec.command, policy.output_volume, spec.extra_ro_mounts,
-                       spec.gpus, spec.shm_size, spec.env)
+                       spec.gpus, spec.shm_size, spec.env, gpu_runtime=spec.gpu_runtime)
     engine = _engine(client, rt, policy, spec.key_path)
     engine.genesis()
     rt.workload().start()
@@ -97,7 +98,8 @@ def _start_sealed(spec: RunSpec, client, policy: pol.Policy) -> Runtime:
                    run_id=s.run_id, secrets_dir=s.secrets, no_logs=True)
         rt.create_workload(spec.image, spec.command, policy.output_volume,
                            {**(spec.extra_ro_mounts or {}), **s.ro_mounts}, spec.gpus, spec.shm_size, spec.env,
-                           output_dir=s.out, read_only=True, tmpfs=spec.sealed.tmpfs, no_logs=True)
+                           output_dir=s.out, read_only=True, tmpfs=spec.sealed.tmpfs, no_logs=True,
+                           gpu_runtime=spec.gpu_runtime)
         engine = _engine(client, rt, policy, spec.key_path, output_dir=s.out, sealer=s.sealer,
                          sealed_info=s.config_info(policy.output_volume))
         engine.genesis()

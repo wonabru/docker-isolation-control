@@ -158,12 +158,18 @@ def mount_content_digest(host_dir: Path, cache: dict | None = None) -> str:
     return c.b2b256(c.canonical_json(entries))
 
 
-def _gpus(hc: dict) -> list[dict]:
+def _gpus(hc: dict, env: list[str] | None = None) -> list[dict]:
+    """GPUs from device requests (`--gpus`) and from the nvidia runtime, which attaches whatever
+    NVIDIA_VISIBLE_DEVICES names (from the run or the image, both in Config.Env)."""
     out = []
     for r in hc.get("DeviceRequests") or []:
         caps = sorted({cap for group in (r.get("Capabilities") or []) for cap in group})
         if "gpu" in caps or r.get("Driver") == "nvidia":
             out.append({"count": r.get("Count", 0), "capabilities": caps, "driver": r.get("Driver", "")})
+    if hc.get("Runtime") == "nvidia":
+        visible = dict(e.split("=", 1) for e in (env or []) if "=" in e).get("NVIDIA_VISIBLE_DEVICES", "")
+        if visible not in ("", "void", "none"):
+            out.append({"runtime": "nvidia", "visible_devices": visible})
     return out
 
 
@@ -191,7 +197,7 @@ def config_doc(inspect: dict, network_internal, mount_content: dict[str, str] | 
         "pid_mode": hc.get("PidMode", ""),
         "ipc_mode": hc.get("IpcMode", ""),
         "devices": len(hc.get("Devices") or []),
-        "gpus": _gpus(hc),
+        "gpus": _gpus(hc, inspect["Config"].get("Env")),
         "shm_size": hc.get("ShmSize") or 0,
     }
 

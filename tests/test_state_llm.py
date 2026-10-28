@@ -45,6 +45,20 @@ def test_config_doc_gpus_shm_and_mount_content():
     assert plain["gpus"] == [] and plain["shm_size"] == 0
 
 
+def test_config_doc_attests_nvidia_runtime_gpus():
+    """GPUs attached by the nvidia runtime are attested too (policy allow_gpu checks them)."""
+    fs = FakeFS(IMAGE)
+    fs.host_extra = {"Runtime": "nvidia"}
+    insp = fs.inspect()
+    insp["Config"]["Env"] = ["PATH=/bin", "NVIDIA_VISIBLE_DEVICES=0,1,2,3"]
+    assert config_doc(insp, fs.network_internal)["gpus"] == [{"runtime": "nvidia", "visible_devices": "0,1,2,3"}]
+    insp["Config"]["Env"] = ["NVIDIA_VISIBLE_DEVICES=void"]
+    assert config_doc(insp, fs.network_internal)["gpus"] == []
+    insp["HostConfig"]["Runtime"] = "runc"
+    insp["Config"]["Env"] = ["NVIDIA_VISIBLE_DEVICES=all"]                # env alone attaches nothing under runc
+    assert config_doc(insp, fs.network_internal)["gpus"] == []
+
+
 def _apply(h, ops):
     for op in ops:
         (h.add if op.op == "add" else h.sub)(op.element)
