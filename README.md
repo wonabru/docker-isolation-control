@@ -56,6 +56,12 @@ The dashboard verifies every checkpoint locally (codes 10–16), keeps a verifie
 **Proof broken**. Container state (status, CPU, RAM) is the operator's claim — it is displayed but
 never affects the verdict. To preview a local run, `--source ./run` is enough.
 
+When the workload exits, the daemon signs one last checkpoint marked `final`; the verifier rejects any
+checkpoint after it, and the dashboard shows **Run finished** instead of warning about missing checkpoints.
+A run that ended without it (an older POI, or a daemon stopped after the workload exited) can be closed
+by the operator: `poi finalize run --key signing.key` (checks with Docker that the workload is gone;
+`--force` skips that).
+
 ## Sealed mode — data unreadable after the audit
 
 With `--sealed` the client's data exists in plaintext only in RAM (tmpfs) during the run. Everything left

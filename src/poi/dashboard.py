@@ -120,6 +120,7 @@ class DashboardApp:
                 "version": m.version,
                 "source": self.source_label,
                 "verdict": {"level": verdict.level, "reasons": verdict.reasons},
+                "finished": res.finished,
                 "last_checkpoint": None if last is None else {"seq": last["seq"], "t": last["t"],
                                                                 "state": last["state"]["digest"],
                                                                 "age_s": age},

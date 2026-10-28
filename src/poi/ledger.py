@@ -86,7 +86,8 @@ class Ledger:
 
     def append(self, *, t: str, container: dict, policy_digest: str,
                accs: dict[str, LtHash], counts: dict[str, int], ops: list[DeltaOp],
-               restart: bool = False, rotate_to: Ed25519PrivateKey | None = None) -> dict:
+               restart: bool = False, rotate_to: Ed25519PrivateKey | None = None, final: bool = False) -> dict:
+        """`final`: the operator signs that the run has ended — no checkpoint may follow this one."""
         prev = self.last()
         seq = 0 if prev is None else prev["seq"] + 1
         dbytes = delta_bytes(ops)
@@ -108,6 +109,8 @@ class Ledger:
         }
         if rotate_to is not None:
             cp["rotate"] = pubkey_hex(rotate_to)
+        if final:
+            cp["final"] = True
         cp["sig"] = self.key.sign(checkpoint_signing_bytes(cp)).hex()
         _write_atomic(self.ledger_dir / f"{seq:06d}.json", canonical_json(cp))
         if rotate_to is not None:

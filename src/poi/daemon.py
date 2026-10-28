@@ -65,7 +65,7 @@ def loop(engine: Engine, rt: Runtime, tick_seconds: float, max_ticks: int | None
                      cp["egress"]["count"])
             if w.status == "exited":
                 time.sleep(0.5)          # let the proxy flush the last WAL lines
-                engine.tick()
+                engine.tick(final=True)  # signed end of run: the data owner's dashboard stops expecting more
                 return
     except KeyboardInterrupt:
         engine.tick()

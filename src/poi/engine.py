@@ -54,13 +54,13 @@ class Engine:
                 self.counts["egress"] += 1
         return ops
 
-    def _commit(self, ops: list[DeltaOp], restart: bool = False) -> dict:
+    def _commit(self, ops: list[DeltaOp], restart: bool = False, final: bool = False) -> dict:
         for op in ops:
             (self.accs[op.acc].add if op.op == "add" else self.accs[op.acc].sub)(op.element)
         last = self.ledger.last()
         t = self.clock() if last is None else max(self.clock(), last["t"])  # never go backwards
         cp = self.ledger.append(t=t, container=self.container, policy_digest=self.policy.digest,
-                                accs=self.accs, counts=self.counts, ops=ops, restart=restart)
+                                accs=self.accs, counts=self.counts, ops=ops, restart=restart, final=final)
         self.publisher.publish(cp)
         if self.violations:
             self.on_violation(self.violations)
@@ -70,10 +70,11 @@ class Engine:
         self.tracker.load_image()
         return self._commit(self._state_ops(full=False))
 
-    def tick(self) -> dict:
+    def tick(self, final: bool = False) -> dict:
+        """`final=True` after the workload exited: the last checkpoint, signed as the end of the run."""
         self.ticks += 1
         full = self.full_scan_every > 0 and self.ticks % self.full_scan_every == 0
-        return self._commit(self._state_ops(full) + self._wal_ops())
+        return self._commit(self._state_ops(full) + self._wal_ops(), final=final)
 
     def resume(self) -> dict:
         """Daemon restart: rebuild in-memory state from the ledger, then full rescan."""

@@ -268,7 +268,9 @@ class Mirror:
                 acked=set(self.acks), last_received=self.last_received, started=self.started,
                 source_down_since=self.source_down_since, tick_seconds=self.policy.tick_seconds,
                 unbounded_channel=unbounded,
-                run_finished=bool(self.runtime and self.runtime.get("status") == "exited"))
+                # signed end of run in the ledger; else the operator's (unverified) runtime declaration
+                run_finished=self.verifier.res.finished
+                or bool(self.runtime and self.runtime.get("status") == "exited"))
 
     def verdict(self) -> Verdict:
         return assess(self.snapshot(), self.monotonic())

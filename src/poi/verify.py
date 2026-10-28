@@ -67,6 +67,11 @@ class VerifyResult:
     sealed_unchecked: int = 0
 
     @property
+    def finished(self) -> bool:
+        """The operator signed the last checkpoint as the end of the run."""
+        return bool(self.checkpoints and self.checkpoints[-1].get("final"))
+
+    @property
     def last(self) -> dict:
         return self.checkpoints[-1]
 
@@ -219,6 +224,8 @@ class ChainVerifier:
             if cp["prev"] is not None:
                 raise VerifyError(E_CHAIN, seq, "genesis has non-null prev")
         else:
+            if prev.get("final"):
+                raise VerifyError(E_CHAIN, seq, "checkpoint after the final one")
             if cp["prev"] != c.checkpoint_digest(prev):
                 raise VerifyError(E_CHAIN, seq, "prev does not match previous checkpoint")
             if cp["t"] < prev["t"]:
