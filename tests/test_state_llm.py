@@ -102,8 +102,26 @@ def test_attested_mount_change_changes_config(tmp_path):
     assert b'"content":' in tr.last_config
     assert tr.update() == []
     (d / "blobs" / "w1").write_bytes(b"swapped model")
-    ops = tr.update(full=True)                                  # full scans re-hash attested mounts
+    ops = tr.update(full=True)                                  # changed files are re-hashed
     assert [o.op for o in ops] == ["sub", "add"] and ops[1].element.startswith(b"config\0")
+
+
+def test_full_scan_does_not_reread_unchanged_mount(tmp_path, monkeypatch):
+    import poi.state as state
+    d = _model_dir(tmp_path)
+    fs = FakeFS(IMAGE, mounts=[{"Destination": "/hf", "RW": False, "Type": "bind", "Source": str(d)}])
+    tr = StateTracker(fs, image_mode="digest", attest_mounts=("/hf",))
+    tr.load_image()
+    reads = []
+    real = state._digest_stream
+    monkeypatch.setattr(state, "_digest_stream", lambda f: reads.append(f.name) or real(f))
+    tr.update(full=True)
+    first = len(reads)
+    assert first > 0
+    assert tr.update(full=True) == [] and len(reads) == first   # weights hashed once, not every full scan
+    (d / "blobs" / "w1").write_bytes(b"swapped model")
+    ops = tr.update()                                           # any tick catches a changed file
+    assert [o.op for o in ops] == ["sub", "add"] and len(reads) == first + 1
 
 
 def test_unknown_image_mode_rejected():

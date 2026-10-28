@@ -136,7 +136,8 @@ def mount_content_digest(host_dir: Path, cache: dict | None = None) -> str:
     """BLAKE2b-256 over [relative path, type, content digest] of every entry under a host directory.
 
     Symlinks contribute their target; file digests are cached by (path, size, mtime, inode, ctime).
-    Full scans start from an empty cache, so a same-size rewrite within one timestamp tick is caught there.
+    The cache lives for the whole run: any write moves ctime (set by the kernel, not settable from
+    user space), so re-reading unchanged weights on every full scan would only stall checkpoints.
     """
     cache = {} if cache is None else cache
     host_dir = Path(host_dir)
@@ -301,8 +302,6 @@ class StateTracker:
         return t
 
     def target(self, full: bool = False) -> dict[str, bytes]:
-        if full:
-            self._mount_cache.clear()
         inspect = self.fs.inspect()
         excludes = self._excludes(inspect)
         if self.image_mode == "digest":
