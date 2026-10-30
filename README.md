@@ -133,3 +133,9 @@ pytest -m "not docker"           # unit tests
 pytest -m "docker and not gpu"   # end-to-end with real Docker (builds the poi-proxy:0.2 image)
 pytest -m "docker and gpu"       # LLM case: NVIDIA GPU, vLLM 0.11 image and Qwen3-0.6B in the HF cache
 ```
+
+## License
+
+Copyright 2026 Krzysztof Urbanowicz (wonabru).
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

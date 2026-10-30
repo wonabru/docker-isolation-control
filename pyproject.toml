@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "poi"
 version = "0.1.0"
 description = "Proof of Isolation: homomorphic-hash attestation that data does not leave a Docker container"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.26",
