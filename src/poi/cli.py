@@ -416,7 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--sealed", action="store_true", help="client data only in tmpfs; evidence sealed to the client")
     s.add_argument("--client-pub", help="client public key (sealed mode)")
     s.add_argument("--sealed-mount", action="append", default=[], help="BUNDLE:TARGET sealed read-only mount")
-    s.add_argument("--tmpfs", action="append", default=[], help="extra writable tmpfs path (sealed; /tmp always)")
+    s.add_argument("--tmpfs", action="append", default=[], help="extra writable tmpfs PATH or PATH:OPTIONS, e.g. /jit:exec (sealed; /tmp always)")
     s.add_argument("--allow-swap", action="store_true", help="sealed: run even though swap is active")
     s.add_argument("--grant-timeout", type=float, default=600.0, help="sealed: seconds to wait for grant.bin")
     s.add_argument("image")

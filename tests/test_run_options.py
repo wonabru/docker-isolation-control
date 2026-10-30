@@ -65,9 +65,9 @@ def test_create_workload_sealed_options(tmp_path):
     rt = Runtime(client, tmp_path, RuntimeInfo("r1", "int", "ext", "10.231.0.2"))
     out = tmp_path / "shm-out"
     rt.create_workload("img", None, "/srv/out", {}, output_dir=out, read_only=True,
-                       tmpfs=["/tmp", "/cache"], no_logs=True)
+                       tmpfs=["/tmp", "/cache", "/jit:exec,size=8g"], no_logs=True)
     kw = client.containers.kwargs
-    assert kw["read_only"] is True and kw["tmpfs"] == {"/tmp": "", "/cache": ""}
+    assert kw["read_only"] is True and kw["tmpfs"] == {"/tmp": "", "/cache": "", "/jit": "exec,size=8g"}
     assert kw["log_config"]["Type"] == "none"
     assert kw["volumes"][str(out)] == {"bind": "/srv/out", "mode": "rw"}
     assert str(tmp_path / "out") not in kw["volumes"]

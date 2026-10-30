@@ -148,6 +148,8 @@ class Runtime:
         """Create (not start) the workload: internal network only, proxy env, CA, DNS → stub.
 
         Sealed mode: `output_dir` on tmpfs, read-only root filesystem, `tmpfs` scratch paths, no logs.
+        A tmpfs entry is a path or "PATH:OPTIONS" (Docker tmpfs options, e.g. "/jit:exec" for JIT kernel caches;
+        Docker mounts tmpfs noexec by default).
         GPUs: `gpus` is "all", a count or device ids ("0,1"); by default a device request (`docker --gpus`),
         with `gpu_runtime` (e.g. "nvidia") that runtime + NVIDIA_VISIBLE_DEVICES — for hosts whose NVIDIA
         Container Toolkit runs in CDI mode, where `--gpus` is refused."""
@@ -178,7 +180,7 @@ class Runtime:
         if read_only:
             extra["read_only"] = True
         if tmpfs:
-            extra["tmpfs"] = {p: "" for p in tmpfs}
+            extra["tmpfs"] = dict(t.split(":", 1) if ":" in t else (t, "") for t in tmpfs)
         if no_logs:
             extra["log_config"] = docker.types.LogConfig(type="none")
         w = self.client.containers.create(
