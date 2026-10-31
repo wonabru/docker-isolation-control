@@ -84,3 +84,11 @@ def test_preview_text_hex_truncation():
     assert preview(b"abc") == {"text": "abc", "size": 3, "truncated": False}
     assert preview(b"\xff\x00") == {"hex": "ff00", "size": 2, "truncated": False}
     assert preview(b"a" * 70000)["truncated"] is True
+
+
+def test_traffic_both_directions(dash):
+    app, _ = dash
+    tr = app.summary()["traffic"]
+    assert tr == {"out_requests": 1, "out_bytes": 27, "in_responses": 1, "in_bytes": 13}
+    sent = next(e for e in app.events(None, 100, "all") if e["seq"] == 1)
+    assert (sent["out_bytes"], sent["in_status"], sent["in_bytes"]) == (27, 200, 13)

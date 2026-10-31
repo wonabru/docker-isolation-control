@@ -159,7 +159,7 @@ def clock_from_zero():
     return f
 
 
-def make_engine(tmp_path, key, fs, violations=None, sealer=None):
+def make_engine(tmp_path, key, fs, violations=None, sealer=None, policy=None):
     """Engine + EgressGate over a FakeFS, writing a run into tmp_path/run."""
     from poi.engine import Engine
     from poi.gate import EgressGate
@@ -168,7 +168,7 @@ def make_engine(tmp_path, key, fs, violations=None, sealer=None):
     from poi.state import StateTracker
     from poi.wal import WalReader, WalWriter
 
-    pol = parse(POLICY)
+    pol = parse(policy or POLICY)
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     eng = Engine(Ledger(tmp_path / "run", key), StateTracker(fs, (out, "/srv/out"), sealer=sealer),

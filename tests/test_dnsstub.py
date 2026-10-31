@@ -29,3 +29,27 @@ def test_dns_stub_logs_and_answers(tmp_path):
     fields = [c.decode(e.element) for e in WalReader(tmp_path / "wal").read_new()]
     assert [(f[0], f[1], f[3], f[5]) for f in fields] == [
         ("dns", "1", "api.example.com", "allow"), ("dns", "2", "c2VjcmV0.evil.com", "block")]
+
+
+def test_dns_stub_allow_all_answers_any_name(tmp_path):
+    wal = WalWriter(tmp_path / "wal", tmp_path / "ev")
+    port = _free_port()
+    srv = start_dns(wal, set(), "10.0.0.5", address="127.0.0.1", port=port, allow_all=True)
+    try:
+        r = DNSRecord.parse(DNSRecord.question("anything.example.org").send("127.0.0.1", port, timeout=2))
+    finally:
+        srv.stop()
+    assert str(r.rr[0].rdata) == "10.0.0.5"
+    assert [c.decode(e.element)[5] for e in WalReader(tmp_path / "wal").read_new()] == ["allow"]
+
+
+def test_dns_stub_isolated_blocks_everything(tmp_path):
+    wal = WalWriter(tmp_path / "wal", tmp_path / "ev")
+    port = _free_port()
+    srv = start_dns(wal, {"api.example.com"}, "10.0.0.5", address="127.0.0.1", port=port, allow_all=True,
+                    isolated=lambda: True)
+    try:
+        r = DNSRecord.parse(DNSRecord.question("api.example.com").send("127.0.0.1", port, timeout=2))
+    finally:
+        srv.stop()
+    assert r.header.rcode == RCODE.NXDOMAIN

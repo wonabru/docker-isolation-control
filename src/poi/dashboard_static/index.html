@@ -27,7 +27,8 @@
     </section>
 
     <section class="tiles" aria-label="Totals">
-      <div class="tile"><span class="label">Requests sent</span><span class="value" id="t-sent">–</span><span class="note">all within policy</span></div>
+      <div class="tile"><span class="label">Requests sent ↑</span><span class="value" id="t-sent">–</span><span class="note" id="t-out">outbound data</span></div>
+      <div class="tile"><span class="label">Responses received ↓</span><span class="value" id="t-in">–</span><span class="note" id="t-in-note">inbound data</span></div>
       <div class="tile"><span class="label">Attempts blocked</span><span class="value" id="t-blocked">–</span><span class="note" id="t-dns"></span></div>
       <div class="tile"><span class="label">Your data found in traffic</span><span class="value" id="t-hits">–</span><span class="note" id="t-hits-note"></span></div>
       <div class="tile"><span class="label">Covert channel limit</span><span class="value" id="t-cap">–</span><span class="note">upper bound across all sent requests</span></div>
@@ -44,7 +45,7 @@
     <div class="lower">
       <section class="feed">
         <div class="section-head">
-          <h2>Outbound traffic</h2>
+          <h2>Traffic <span class="dir">↑ out · ↓ in</span></h2>
           <div class="filters" role="group" aria-label="Filter traffic">
             <button type="button" data-kind="all" aria-pressed="true">All</button>
             <button type="button" data-kind="allowed" aria-pressed="false">Sent</button>
@@ -53,7 +54,7 @@
           </div>
         </div>
         <ol class="events" id="events"></ol>
-        <p class="empty" id="events-empty" hidden>No outbound traffic yet. Every request the container makes will appear here.</p>
+        <p class="empty" id="events-empty" hidden>No traffic yet. Every request the container makes, and the answer it gets back, will appear here.</p>
       </section>
 
       <aside class="operator" aria-labelledby="op-title">

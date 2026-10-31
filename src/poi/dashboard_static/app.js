@@ -88,6 +88,10 @@ function renderSummary(sum) {
   $("source").textContent = sum.source || "";
 
   $("t-sent").textContent = sum.sent;
+  const tr = sum.traffic || {};
+  $("t-out").textContent = `${bytes(tr.out_bytes)} out`;
+  $("t-in").textContent = tr.in_responses ?? "–";
+  $("t-in-note").textContent = `${bytes(tr.in_bytes)} in`;
   $("t-blocked").textContent = sum.blocked;
   $("t-dns").textContent = `${sum.dns} DNS lookups`;
   const hits = $("t-hits");
@@ -136,6 +140,15 @@ function renderOperator(op, err) {
   $("operator").replaceChildren(...rows);
 }
 
+// 1536 → "1.5 KB"; null (sealed, not opened) → "–"
+function bytes(n) {
+  if (n === null || n === undefined) return "–";
+  if (n < 1024) return `${n} B`;
+  const u = ["KB", "MB", "GB"]; let v = n / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+}
+
 async function loadEvents() {
   const rows = await api(`/api/events?kind=${state.kind}&limit=200`);
   $("events").replaceChildren(...rows.map((r) => el("li", {},
@@ -143,6 +156,8 @@ async function loadEvents() {
       el("span", { class: "time" }, r.t.slice(11, 19)),
       el("span", { class: `tag ${r.verdict}` }, r.kind === "dns" ? `dns ${r.verdict === "allow" ? "ok" : "no"}` : r.verdict === "allow" ? "sent" : "blocked"),
       el("span", {}, el("span", { class: "target" }, r.target), r.reason ? el("span", { class: "why" }, ` — ${r.reason}`) : null),
+      r.kind === "http" ? el("span", { class: "io" }, `↑ ${bytes(r.out_bytes)}`,
+        r.in_status !== undefined ? ` · ↓ ${r.in_status ?? ""} ${bytes(r.in_bytes)}` : r.verdict === "allow" ? " · ↓ …" : "") : el("span"),
       r.hit ? el("span", { class: "badge" + (r.acked ? " acked" : "") }, r.acked ? "your data · seen" : "contains your data") : el("span")))));
   $("events-empty").hidden = rows.length > 0;
 }

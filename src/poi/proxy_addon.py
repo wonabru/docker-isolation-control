@@ -33,8 +33,11 @@ class PoiAddon:
             kp = SECRETS / "fingerprint.key" if (SECRETS / "fingerprint.key").exists() else RUN / "fingerprint.key"
             fp = FingerprintSet.load(RUN / "fingerprints.bin", kp.read_bytes(),
                                      self.policy.fingerprint_k, self.policy.fingerprint_w)
-        self.gate = EgressGate(self.policy, self.wal, fp)
-        self.dns = start_dns(self.wal, self.policy.hosts, os.environ["POI_PROXY_IP"])
+        # Kill switch: the operator creates <run>/isolate; from the next request on everything is blocked and logged.
+        isolated = (RUN / "isolate").exists
+        self.gate = EgressGate(self.policy, self.wal, fp, isolated=isolated)
+        self.dns = start_dns(self.wal, self.policy.hosts, os.environ["POI_PROXY_IP"],
+                             allow_all=self.policy.allow_all_egress, isolated=isolated)
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
         r = self.gate.on_connect(flow.request.host)
@@ -49,13 +52,15 @@ class PoiAddon:
         if r.verdict != "allow":
             flow.response = _blocked(r.reason)
             return
+        flow.metadata["poi_seq"] = r.seq
+        if self.policy.allow_all_egress:
+            return                               # forwarded unchanged (already in the WAL)
         req.headers.clear()                      # drop every client header: no header side channel
         if req.http_version.startswith("HTTP/1"):
             req.headers["host"] = host
         for k, v in r.headers:
             req.headers[k] = v
         req.content = r.body                     # canonical JSON; sets content-length
-        flow.metadata["poi_seq"] = r.seq
 
     def response(self, flow: http.HTTPFlow) -> None:
         seq = flow.metadata.get("poi_seq")

@@ -26,3 +26,9 @@ def test_builds_proxy_image_only_when_missing():
     ensure_proxy_image(present)
     assert missing.images.built == [PROXY_IMAGE]
     assert present.images.built == []
+
+
+def test_workload_hardening_never_adds_capabilities():
+    from poi import runtime
+    assert "cap_add" not in runtime.HARDENING and "NET_RAW" in runtime.HARDENING["cap_drop"]
+    assert runtime.HARDENING["security_opt"] == ["no-new-privileges:true"]

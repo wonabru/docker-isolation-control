@@ -41,12 +41,25 @@ class DashboardApp:
         self.m = mirror
         self.source_label = source_label
         self._cp_cache: dict[int, dict] = {}
+        self._sizes: dict[str, int | None] = {}
 
     # -- helpers --------------------------------------------------------------------
     def _evidence(self, digest: str) -> bytes | None:
         return self.m.evidence(digest)
 
-    def _event_row(self, ev) -> dict:
+    def _size(self, digest) -> int | None:
+        """Bytes of one evidence blob (cached); None when it is sealed or missing."""
+        if not isinstance(digest, str) or not digest:
+            return None
+        if digest not in self._sizes:
+            data = self._evidence(digest)
+            self._sizes[digest] = None if data is None else len(data)
+        return self._sizes[digest]
+
+    def _ingress(self) -> dict:
+        return {e.seq: e for e in self.m.verifier.res.ingress}
+
+    def _event_row(self, ev, ingress: dict | None = None) -> dict:
         f = self.m.fields(ev.fields)
         hit = self.m.hits.get(ev.seq)
         if ev.domain == "dns":
@@ -54,7 +67,11 @@ class DashboardApp:
                    "verdict": f[5], "reason": "" if f[5] == "allow" else "dns"}
         else:
             row = {"seq": ev.seq, "kind": "http", "t": f[2], "method": f[3], "host": f[4], "path": f[5],
-                   "target": f"{f[3]} {f[4]}{f[5]}", "verdict": f[8], "reason": f[9]}
+                   "target": f"{f[3]} {f[4]}{f[5]}", "verdict": f[8], "reason": f[9], "out_bytes": self._size(f[7])}
+            ing = (ingress if ingress is not None else self._ingress()).get(ev.seq)
+            if ing is not None:
+                g = self.m.fields(ing.fields)
+                row.update(in_status=int(g[2]) if str(g[2]).isdigit() else None, in_bytes=self._size(g[4]))
         row.update(checkpoint=ev.checkpoint, hit=hit[1] if hit else None, acked=ev.seq in self.m.acks)
         return row
 
@@ -107,6 +124,10 @@ class DashboardApp:
             last = res.checkpoints[-1] if res.checkpoints else None
             n = len(res.checkpoints)
             hit_cps = {ev.checkpoint for ev in res.egress if ev.seq in m.hits}
+            # Data volume both ways: request bodies that left (sent) and response bodies that came back.
+            out_bytes = sum(self._size(m.fields(ev.fields)[7]) or 0 for ev in res.egress
+                            if ev.domain == "egress" and m.fields(ev.fields)[8] == "allow")
+            in_bytes = sum(self._size(m.fields(ev.fields)[4]) or 0 for ev in res.ingress)
             timeline = []
             for seq in range(max(0, n - TIMELINE), n):
                 s = self._cp_stats(seq)
@@ -128,6 +149,8 @@ class DashboardApp:
                 "hits_allowed": sum(1 for v, _ in m.hits.values() if v == "allow"),
                 "hits_blocked": sum(1 for v, _ in m.hits.values() if v != "allow"),
                 "capacity_bits": None if math.isinf(cap) else round(cap, 1),
+                "traffic": {"out_requests": sum(allowed.values()), "out_bytes": out_bytes,
+                            "in_responses": len(res.ingress), "in_bytes": in_bytes},
                 "timeline": timeline,
                 "operator": m.runtime,
                 "source_error": m.source_error,
@@ -137,11 +160,12 @@ class DashboardApp:
     def events(self, before: int | None, limit: int, kind: str) -> list[dict]:
         with self.m.lock:
             evs = self.m.verifier.res.egress
+            ingress = self._ingress()
             out = []
             for ev in reversed(evs):
                 if before is not None and ev.seq >= before:
                     continue
-                row = self._event_row(ev)
+                row = self._event_row(ev, ingress)
                 if kind == "allowed" and row["verdict"] != "allow":
                     continue
                 if kind == "blocked" and row["verdict"] == "allow":

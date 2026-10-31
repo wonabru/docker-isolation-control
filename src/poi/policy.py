@@ -51,6 +51,9 @@ class Policy:
     image_attestation: str = "files"          # "files": hash every image file; "digest": trust the image ID
     attest_mounts: list[str] = field(default_factory=list)
     require_sealed: bool = False
+    # Forward every egress (HTTP(S) via the proxy, DNS) and only record it. It is part of the signed policy,
+    # so a verifier sees that the run was not network-isolated.
+    allow_all_egress: bool = False
 
     @property
     def digest(self) -> str:
@@ -113,7 +116,8 @@ def parse(raw: bytes) -> Policy:
                   allow_gpu=bool(d.get("allow_gpu", False)),
                   image_attestation=d.get("image_attestation", "files"),
                   attest_mounts=list(d.get("attest_mounts", [])),
-                  require_sealed=bool(d.get("require_sealed", False)))
+                  require_sealed=bool(d.get("require_sealed", False)),
+                  allow_all_egress=bool(d.get("allow_all_egress", False)))
 
 
 # --- channel capacity (spec §6.3) -------------------------------------------

@@ -14,6 +14,12 @@ import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 
 PROXY_IMAGE = "poi-proxy:0.2"
+# Workload hardening against the host: Docker's default capabilities minus the ones a review never needs
+# (raw sockets for scanning/spoofing, device nodes, chroot, capability and file-capability changes, audit, low ports),
+# no privilege gain through setuid binaries, a ceiling on processes (fork bombs).
+# Dropped explicitly (not "drop ALL + add back"): the policy treats any cap_add as an escalation.
+DROPPED_CAPS = ["AUDIT_WRITE", "MKNOD", "NET_BIND_SERVICE", "NET_RAW", "SETFCAP", "SETPCAP", "SYS_CHROOT"]
+HARDENING = {"cap_drop": DROPPED_CAPS, "security_opt": ["no-new-privileges:true"], "pids_limit": 8192}
 SECRETS_IN_PROXY = "/run/poi-secrets"     # must match POI_SECRETS in proxy_addon.py
 PROXY_PORT = 8080
 CA_IN_WORKLOAD = "/etc/poi/ca.pem"
@@ -185,7 +191,7 @@ class Runtime:
             extra["log_config"] = docker.types.LogConfig(type="none")
         w = self.client.containers.create(
             image, command=command, name=f"poi-{i.run_id}-workload", network=i.int_network,
-            dns=[i.proxy_ip], environment=env, volumes=volumes, **extra)
+            dns=[i.proxy_ip], environment=env, volumes=volumes, **HARDENING, **extra)
         i.workload_id = w.id
         i.save(self.run_dir)
         return w

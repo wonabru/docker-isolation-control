@@ -169,13 +169,13 @@ def _check_egress(ev: Event, get: GetEvidence, policy: Policy, sealer=None) -> b
         return False
     if ev.domain == "dns":
         _, _, _, name, qtype, verdict = f
-        if verdict == "allow" and (name not in policy.hosts or qtype != "A"):
+        if verdict == "allow" and ((name not in policy.hosts and not policy.allow_all_egress) or qtype != "A"):
             raise VerifyError(E_SCHEMA, ev.checkpoint, f"dns seq {ev.seq}: {name} answered but not allowed")
         return True
     _, _, _, method, host, path, hdig, bdig, verdict, _ = f
     headers = _evidence(get, hdig, ev.checkpoint, f"egress {ev.seq} headers")
     body = _evidence(get, bdig, ev.checkpoint, f"egress {ev.seq} body")
-    if verdict != "allow":
+    if verdict != "allow" or policy.allow_all_egress:
         return True
     d = policy.decide(host, method, path, body)
     if d.verdict != "allow" or d.body != body:
