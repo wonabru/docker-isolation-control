@@ -1,5 +1,7 @@
 from poi.lthash import LtHash
-from poi.state import CONFIG_KEY, StateTracker, config_doc, scan_tar
+import os
+
+from poi.state import CONFIG_KEY, StateTracker, config_doc, scan_host_dir, scan_tar
 
 from helpers import FakeFS
 
@@ -93,3 +95,22 @@ def test_scan_tar_symlink_and_dirs():
     idx = scan_tar(FakeFS(IMAGE).export())
     assert idx["/bin/ash"].split(b"\0")[2] == b"symlink"
     assert idx["/etc"].split(b"\0")[2] == b"dir"
+
+
+def test_scan_host_dir_skips_entry_that_vanishes_mid_scan(tmp_path, monkeypatch):
+    # The model-preview stream writes current.json via a current.json.tmp + rename, so the
+    # .tmp entry can disappear between os.walk listing it and the lstat here. That used to
+    # crash the daemon with FileNotFoundError; now the vanished entry is skipped.
+    (tmp_path / "current.json").write_bytes(b"{}")
+    (tmp_path / "current.json.tmp").write_bytes(b"{}")
+    real_lstat = os.lstat
+
+    def flaky_lstat(p, *a, **k):
+        if str(p).endswith("current.json.tmp"):
+            raise FileNotFoundError(2, "No such file or directory", str(p))
+        return real_lstat(p, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", flaky_lstat)
+    out = scan_host_dir(tmp_path, "/srv/out")
+    assert "/srv/out/current.json" in out
+    assert "/srv/out/current.json.tmp" not in out

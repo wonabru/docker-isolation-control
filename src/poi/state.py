@@ -117,17 +117,24 @@ def scan_host_dir(host_dir: Path, target: str) -> dict[str, bytes]:
     for root, dirs, files in os.walk(host_dir):
         for name in sorted(dirs) + sorted(files):
             p = Path(root) / name
-            s = os.lstat(p)
-            cpath = target.rstrip("/") + "/" + str(p.relative_to(host_dir))
-            if st.S_ISREG(s.st_mode):
-                with open(p, "rb") as f:
-                    content, ftype = _digest_stream(f), "file"
-            elif st.S_ISLNK(s.st_mode):
-                content, ftype = os.readlink(p), "symlink"
-            elif st.S_ISDIR(s.st_mode):
-                content, ftype = "", "dir"
-            else:
-                content, ftype = "", "special"
+            # A live output dir (e.g. the model-preview stream writes current.json via a
+            # current.json.tmp + rename) mutates while we scan: an entry can vanish between
+            # os.walk listing it and the lstat/open here. Such a file is genuinely absent in
+            # this snapshot, so skip it — the next tick captures the current state.
+            try:
+                s = os.lstat(p)
+                cpath = target.rstrip("/") + "/" + str(p.relative_to(host_dir))
+                if st.S_ISREG(s.st_mode):
+                    with open(p, "rb") as f:
+                        content, ftype = _digest_stream(f), "file"
+                elif st.S_ISLNK(s.st_mode):
+                    content, ftype = os.readlink(p), "symlink"
+                elif st.S_ISDIR(s.st_mode):
+                    content, ftype = "", "dir"
+                else:
+                    content, ftype = "", "special"
+            except FileNotFoundError:
+                continue
             out[cpath] = c.file_element(cpath, ftype, s.st_mode, s.st_uid, s.st_gid, content)
     return out
 
